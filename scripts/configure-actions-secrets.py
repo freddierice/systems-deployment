@@ -3,15 +3,15 @@
 
 Run after configure-actions-identity.py. With --apply, the registry publisher
 credential is generated from the local doctl session. The deployment credential
-comes from the existing systems-digitalocean-token recovery secret. Supply the
-GitHub dispatch credential in SYSTEMS_DEPLOY_TOKEN, or explicitly choose
---use-gh-session to use the current GitHub CLI credential (which retains that
-session's full permissions). No credential is printed or passed on argv.
+comes from the existing systems-digitalocean-token recovery secret. The existing
+deployment-repository SSH key is stored for the shared workflow to record image
+updates. No personal GitHub login is needed. No credential is printed or passed
+on argv.
 """
 import argparse
 import base64
 import json
-import os
+from pathlib import Path
 import subprocess
 import sys
 import urllib.error
@@ -21,7 +21,7 @@ PROJECT = "macro-events-882dcb"
 SECRETS = (
     "systems-actions-digitalocean",
     "systems-actions-digitalocean-deploy",
-    "systems-actions-github-dispatch",
+    "systems-actions-git-key",
 )
 
 
@@ -51,17 +51,18 @@ def verify_registry_only(token):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--use-gh-session", action="store_true", help="Explicitly store the current gh credential for dispatch/source reads.")
+    parser.add_argument("--git-key", type=Path, default=Path("/home/codex/.ssh/systems_deployment"),
+                        help="Existing write deploy key for systems-deployment.")
     args = parser.parse_args()
     print("Secret Manager credentials: " + ", ".join(SECRETS))
     if not args.apply:
         print("Dry run. --apply publishes new versions; it never creates a Google service-account key or GitHub Actions secret.")
         return
-    token = os.environ.get("SYSTEMS_DEPLOY_TOKEN", "").strip()
-    if not token and args.use_gh_session:
-        token = command(["gh", "auth", "token", "--hostname", "github.com"]).decode().strip()
-    if not token:
-        raise RuntimeError("Set SYSTEMS_DEPLOY_TOKEN, or explicitly pass --use-gh-session after authenticating gh.")
+    git_key = args.git_key.read_bytes()
+    if not git_key.startswith(b"-----BEGIN OPENSSH PRIVATE KEY-----"):
+        raise RuntimeError("The deployment repository key must be an OpenSSH private key.")
+    if args.git_key.stat().st_mode & 0o077:
+        raise RuntimeError("The deployment key must not be accessible to other users.")
     for secret in SECRETS:
         command(["gcloud", "secrets", "describe", secret, "--project", PROJECT, "--format=json"])
     deploy_token = command([
@@ -77,7 +78,7 @@ def main():
     auth = config["auths"]["registry.digitalocean.com"]
     publisher = base64.b64decode(auth["auth"]).decode().split(":", 1)[1]
     verify_registry_only(publisher)
-    values = (publisher.encode(), deploy_token, token.encode())
+    values = (publisher.encode(), deploy_token, git_key)
     for secret, value in zip(SECRETS, values):
         if not value:
             raise RuntimeError(f"Refusing to publish an empty credential to {secret}.")

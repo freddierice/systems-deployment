@@ -1,26 +1,35 @@
 name: Deploy application
-run-name: Deploy ${{ github.event.client_payload.app }} from ${{ github.event.client_payload.source_sha }}
 
 on:
-  repository_dispatch:
-    types: [deploy-app]
+  workflow_call:
+    inputs:
+      app:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      image_digest:
+        required: true
+        type: string
+      run_id:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-# Preserve pending releases for both apps while updating the shared Helm release.
-concurrency:
-  group: systems-production
-  queue: max
-  cancel-in-progress: false
-
 jobs:
   deploy:
-    if: github.repository == 'freddierice/systems-deployment' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      inputs.source_sha == github.sha &&
+      ((github.repository == 'freddierice/health' && inputs.app == 'health') ||
+       (github.repository == 'freddierice/trends' && inputs.app == 'trends'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
       id-token: write
     defaults:
       run:
@@ -32,24 +41,36 @@ jobs:
       - name: Check out the current deployment configuration
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          repository: freddierice/systems-deployment
           ref: main
           fetch-depth: 0
+          persist-credentials: false
           # Google's temporary federation credentials stay outside this checkout.
           path: source
       - name: Authenticate to Google Cloud through GitHub OIDC
+        id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: projects/186933910776/locations/global/workloadIdentityPools/systems-actions/providers/github
+          service_account: systems-ci-deploy@macro-events-882dcb.iam.gserviceaccount.com
           create_credentials_file: true
           cleanup_credentials: true
+          token_format: access_token
       - name: Read deployment credentials from Google Secret Manager
         id: credentials
         uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
         with:
           secrets: |
             digitalocean:projects/186933910776/secrets/systems-actions-digitalocean-deploy/versions/latest
-            github_dispatch:projects/186933910776/secrets/systems-actions-github-dispatch/versions/latest
+            git_key:projects/186933910776/secrets/systems-actions-git-key/versions/latest
+      - name: Configure the existing deployment-repository Git identity
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: freddierice/systems-deployment
+          ref: main
+          fetch-depth: 0
+          path: source
+          ssh-key: ${{ steps.credentials.outputs.git_key }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -73,6 +94,15 @@ jobs:
             command -v "$tool" >/dev/null
           done
           pip install -r requirements-dev.txt
+      - name: Wait for exclusive access to the shared deployment
+        id: lock
+        timeout-minutes: 22
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          python scripts/actions-release-lock.py acquire \
+            --owner "$GITHUB_REPOSITORY/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" \
+            --state "$RUNNER_TEMP/systems-release-lock.json"
       - name: Allow this runner through the public API firewall
         id: firewall
         env:
@@ -95,12 +125,13 @@ jobs:
       - name: Deploy the requested image and record the successful release
         timeout-minutes: 40
         env:
-          GH_TOKEN: ${{ steps.credentials.outputs.github_dispatch }}
+          # The caller's built-in token reads only its own private app repository.
+          GH_TOKEN: ${{ github.token }}
           DIGITALOCEAN_ACCESS_TOKEN: ${{ steps.credentials.outputs.digitalocean }}
-          RELEASE_APP: ${{ github.event.client_payload.app }}
-          RELEASE_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
-          RELEASE_IMAGE_DIGEST: ${{ github.event.client_payload.image_digest }}
-          RELEASE_RUN_ID: ${{ github.event.client_payload.run_id }}
+          RELEASE_APP: ${{ inputs.app }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_IMAGE_DIGEST: ${{ inputs.image_digest }}
+          RELEASE_RUN_ID: ${{ inputs.run_id }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python scripts/deploy-app.py \
@@ -125,3 +156,17 @@ jobs:
       - name: Remove temporary Kubernetes credentials
         if: always()
         run: rm -f "$RUNNER_TEMP/systems-kubeconfig"
+      - name: Refresh Google access for lock cleanup
+        id: cleanup_auth
+        if: always() && steps.lock.outcome != 'skipped' && steps.auth.outcome == 'success'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/186933910776/locations/global/workloadIdentityPools/systems-actions/providers/github
+          service_account: systems-ci-deploy@macro-events-882dcb.iam.gserviceaccount.com
+          create_credentials_file: false
+          token_format: access_token
+      - name: Release the shared deployment lock
+        if: always() && steps.cleanup_auth.outcome == 'success'
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.cleanup_auth.outputs.access_token }}
+        run: python scripts/actions-release-lock.py release --state "$RUNNER_TEMP/systems-release-lock.json"
