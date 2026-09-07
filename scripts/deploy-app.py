@@ -85,7 +85,8 @@ def verify_digest(app, source_sha, digest):
     # doctl's list-tags follows API pagination; no Docker credential is generated.
     tags = json.loads(output("doctl", "registry", "repository", "list-tags", app,
                              "--registry", REGISTRY, "--output", "json"))
-    matches = [tag["manifest_digest"] for tag in tags if tag["tag"] == source_sha]
+    # DOCR can also return untagged attestation manifests alongside image tags.
+    matches = [tag["manifest_digest"] for tag in tags if tag.get("tag") == source_sha]
     if matches != [digest]:
         raise ReleaseError("The DOCR source-commit tag does not match the requested digest.")
 

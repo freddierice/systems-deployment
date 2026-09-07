@@ -60,6 +60,9 @@ class ValidationTests(unittest.TestCase):
 
     def test_exact_registry_tag_digest_required(self):
         with patch.object(release, "output", return_value=json.dumps([
+            {"registry_name": "freddierice-systems", "repository": "health",
+             "manifest_digest": "sha256:" + "d" * 64, "compressed_size_bytes": 1024,
+             "size_bytes": 2048, "updated_at": "2026-09-07T20:59:00Z"},
             {"tag": SHA, "manifest_digest": DIGEST},
             {"tag": "latest", "manifest_digest": "sha256:" + "c" * 64},
         ])):
