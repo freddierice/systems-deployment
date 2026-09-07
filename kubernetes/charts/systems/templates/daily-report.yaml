@@ -99,6 +99,15 @@ spec:
                   - {key: google.json, path: google.json}
 {{- if $report.printer.enabled }}
 ---
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: daily-report-printer
+spec:
+  tailscale:
+    # The printer's LAN address is advertised by the home subnet router.
+    acceptRoutes: true
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -106,6 +115,7 @@ metadata:
   annotations:
     tailscale.com/tailnet-ip: {{ $report.printer.tailnetIP | quote }}
     tailscale.com/tags: {{ $report.printer.tags | quote }}
+    tailscale.com/proxy-class: daily-report-printer
 spec:
   type: ExternalName
   externalName: placeholder

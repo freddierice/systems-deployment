@@ -99,13 +99,20 @@ class DailyReportTests(unittest.TestCase):
         self.assertEqual(security["capabilities"]["drop"], ["ALL"])
 
     def test_printer_service_is_explicitly_enabled_and_private(self):
-        self.assertNotIn(("Service", "daily-report-printer"), self.report_resources())
+        disabled = self.report_resources()
+        self.assertNotIn(("Service", "daily-report-printer"), disabled)
+        self.assertNotIn(("ProxyClass", "daily-report-printer"), disabled)
         resources = self.report_resources("--set", "dailyReport.printer.enabled=true")
         service = resources["Service", "daily-report-printer"]
         self.assertEqual(service["spec"]["type"], "ExternalName")
         self.assertEqual(service["metadata"]["annotations"], {
             "tailscale.com/tailnet-ip": "10.0.0.33", "tailscale.com/tags": "tag:systems",
+            "tailscale.com/proxy-class": "daily-report-printer",
         })
+        proxy_class = resources["ProxyClass", service["metadata"]["annotations"]["tailscale.com/proxy-class"]]
+        self.assertEqual(proxy_class["apiVersion"], "tailscale.com/v1alpha1")
+        self.assertNotIn("namespace", proxy_class["metadata"])
+        self.assertTrue(proxy_class["spec"]["tailscale"]["acceptRoutes"])
         self.assertEqual(service["spec"]["ports"], [{"name": "ipp", "port": 631, "protocol": "TCP"}])
         pod = resources["CronJob", "daily-report"]["spec"]["jobTemplate"]["spec"]["template"]["spec"]
         env = {entry["name"]: entry["value"] for entry in pod["containers"][0]["env"]}

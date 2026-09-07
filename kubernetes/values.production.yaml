@@ -6,7 +6,7 @@ dailyReport:
   image: registry.digitalocean.com/freddierice-systems/daily-report@sha256:93e6316c6b2986722771de056e00b9b8ce306efac51703663b8fb0cebab2ba96
   sourceRevision: "c91a99c67d0168018470e43fa139e7c8590d2522"
   printer:
-    enabled: false
+    enabled: true
 imagePullSecrets:
 - name: freddierice-systems
 apps:

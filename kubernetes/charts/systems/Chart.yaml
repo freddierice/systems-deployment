@@ -2,4 +2,4 @@ apiVersion: v2
 name: systems
 description: Private applications and daily report printing through Tailscale and Freddie PKI
 type: application
-version: 0.3.0
+version: 0.3.1
