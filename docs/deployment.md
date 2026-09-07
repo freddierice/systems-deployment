@@ -75,7 +75,7 @@ DOKS initially bundled Gateway API v1.2.1. We used its documented external-insta
 
 Both apps were migrated from the droplet to DOKS on 2026-09-07. Their final imports committed 45 tables and 978 rows: Health 9 tables / 763 rows, Trends 36 tables / 215 rows. Every table's count and canonical row checksum matched its frozen SQLite snapshot. Health measurements, connected provider tokens/ownership, workouts, and all Trends journal/research/history records were retained. Database sequences were reset after preserving existing IDs.
 
-The original Health checkout contains the owner's uncommitted Measurements and integration work. That content was preserved as commit `fdcbb2b` in an isolated migration worktree before PostgreSQL changes. The live source checkout and its edits were not modified. Both app migration branches are pushed as `codex/postgres-doks`.
+The owner's existing Health Measurements and integration work was preserved as commit `fdcbb2b` before PostgreSQL changes. Both app migrations are now pushed to `main`, and the original local checkouts are on the same commits. Health's former uncommitted source files were verified against that preserved commit before advancing its checkout; a recovery stash is retained. The deployed images correspond to these exact source commits.
 
 | Application | Source commit | DOCR digest |
 | --- | --- |
