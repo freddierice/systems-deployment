@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 
 p = argparse.ArgumentParser(description=__doc__)
-p.add_argument('application', choices=['health', 'trends'])
+p.add_argument('application', choices=['health', 'trends', 'daily-report'])
 p.add_argument('checkout', type=Path)
 p.add_argument('--buildctl', default='buildctl')
 p.add_argument('--address', default='tcp://127.0.0.1:1234')

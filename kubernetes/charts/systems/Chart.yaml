@@ -1,5 +1,5 @@
 apiVersion: v2
 name: systems
-description: Private health and trends hosting through Tailscale and Freddie PKI
+description: Private applications and daily report printing through Tailscale and Freddie PKI
 type: application
-version: 0.2.0
+version: 0.3.0

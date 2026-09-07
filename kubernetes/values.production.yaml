@@ -1,5 +1,12 @@
 postgresMigrationVerified: true
 backgroundJobsEnabled: true
+dailyReport:
+  enabled: true
+  suspend: true
+  image: registry.digitalocean.com/freddierice-systems/daily-report@sha256:73935ba3212ab594c069d6095f56a283079acee4a626f80196a6a8f9fbe610cc
+  sourceRevision: "8baafa098d90034a7efcd1088cb9e03b9b132e0e"
+  printer:
+    enabled: false
 imagePullSecrets:
 - name: freddierice-systems
 apps:

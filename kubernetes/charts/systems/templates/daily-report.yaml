@@ -1,0 +1,117 @@
+{{- if .Values.dailyReport.enabled }}
+{{- $report := .Values.dailyReport }}
+{{- if not (regexMatch "^registry[.]digitalocean[.]com/freddierice-systems/daily-report@sha256:[0-9a-f]{64}$" $report.image) }}
+{{- fail "Daily report requires an immutable DOCR daily-report image digest." }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: daily-report
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: daily-report-data
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ $report.persistence.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ $report.persistence.size | quote }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-report
+spec:
+  schedule: {{ $report.schedule | quote }}
+  timeZone: {{ $report.timeZone | quote }}
+  suspend: {{ $report.suspend }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ $report.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $report.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $report.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      # Printer submission cannot safely be retried automatically.
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ $report.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: daily-report
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          serviceAccountName: daily-report
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: daily-report
+              image: {{ $report.image | quote }}
+              args: [run]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              envFrom:
+                - secretRef:
+                    name: {{ $report.runtimeSecret | quote }}
+              env:
+                - {name: DATA_DIR, value: /data}
+                - {name: TZ, value: {{ $report.timeZone | quote }}}
+                - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+                - {name: PYTHONUNBUFFERED, value: "1"}
+                - {name: GDRIVE_CREDENTIALS, value: /etc/daily-report/google.json}
+                - name: PRINTER_URI
+                  value: {{ $report.printer.uri | default (printf "ipp://daily-report-printer.%s.svc.cluster.local/ipp/print" .Release.Namespace) | quote }}
+                - {name: STEP_TIMEOUT_SECONDS, value: "600"}
+                - {name: PRINT_TIMEOUT_SECONDS, value: "180"}
+              resources:
+                {{- toYaml $report.resources | nindent 16 }}
+              volumeMounts:
+                - {name: data, mountPath: /data}
+                - {name: tmp, mountPath: /tmp}
+                - {name: google, mountPath: /etc/daily-report, readOnly: true}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: daily-report-data
+            - name: tmp
+              emptyDir: {}
+            - name: google
+              secret:
+                secretName: {{ $report.googleSecret | quote }}
+                defaultMode: 0440
+                items:
+                  - {key: google.json, path: google.json}
+{{- if $report.printer.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: daily-report-printer
+  annotations:
+    tailscale.com/tailnet-ip: {{ $report.printer.tailnetIP | quote }}
+    tailscale.com/tags: {{ $report.printer.tags | quote }}
+spec:
+  type: ExternalName
+  externalName: placeholder
+  ports:
+    - name: ipp
+      port: 631
+      protocol: TCP
+{{- end }}
+{{- end }}

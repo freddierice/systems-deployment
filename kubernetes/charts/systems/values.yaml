@@ -2,6 +2,33 @@ postgresMigrationVerified: false
 backgroundJobsEnabled: false
 imagePullSecrets: []
 
+# Keep suspended until state is copied, preflight passes, and source cron is disabled.
+dailyReport:
+  enabled: false
+  suspend: true
+  image: ""
+  schedule: "30 5 * * *"
+  timeZone: America/Chicago
+  startingDeadlineSeconds: 900
+  activeDeadlineSeconds: 2400
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  runtimeSecret: daily-report-runtime
+  googleSecret: daily-report-google
+  persistence:
+    storageClassName: do-block-storage-retain
+    size: 1Gi
+  printer:
+    # Requires a reachable subnet route in the operator's tailnet before enabling.
+    enabled: false
+    tailnetIP: 10.0.0.33
+    tags: tag:systems
+    # Empty uses the printer Service in the release namespace.
+    uri: ""
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
 gateway:
   hostname: systems
 
