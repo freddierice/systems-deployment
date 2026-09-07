@@ -1,44 +1,27 @@
-# Secret storage direction
+# Secret storage
 
-Google Secret Manager is a suitable central store for the Tailscale operator OAuth
-credential and long-lived application API credentials. The operator credential is
-staged by the owner in project `186933910776` under
-`systems-cluster-tailscale-id` and `systems-cluster-tailscale-secret`.
-`kubernetes/bootstrap-google-secrets.py` reads the latest versions through an
-authenticated gcloud CLI and streams them into `tailscale/operator-oauth`.
-It does not print or persist secret payloads locally.
+Google Secret Manager project `186933910776` (`macro-events-882dcb`) is the central store for deployment and integration credentials.
 
-For the initial deployment, gcloud authenticates as
-`codex-trends@macro-events-882dcb.iam.gserviceaccount.com`, using the Owner service
-account credential supplied by the project owner at
-`/home/codex/.config/gcloud/codex-trends.json` (mode `0600`). This administrative
-credential remains on the deployment droplet, outside the repository; it is not
-installed in Kubernetes. The operator receives only its two Tailscale values.
+| Secret | Consumer |
+| --- | --- |
+| `systems-cluster-tailscale-id`, `systems-cluster-tailscale-secret` | Tailscale operator bootstrap |
+| `systems-health-database`, `systems-trends-database` | JSON `DATABASE_URL`, synchronized to each app's Kubernetes Secret |
+| `systems-postgres-bootstrap` | Administrative database bootstrap and credential recovery; never mounted in app pods |
+| `systems-health-runtime` | JSON Health OAuth client settings, synchronized to `health-runtime` |
+| `systems-trends-thetadata`, `systems-trends-fmp` | Trends settings UI and background data providers |
+| `systems-digitalocean-token` | Deployment credential recovery; doctl remains the runner source |
+| `systems-cluster-cloudflare-account`, `systems-cluster-cloudflare-token` | The deployment runner's app DNS script |
 
-A future continuous synchronization option is External Secrets Operator in DOKS, authenticated with
-Google Workload Identity Federation using narrowly scoped Kubernetes identities.
-Grant access to individual required secrets without installing the administrative
-Google service account JSON key in the cluster. External Kubernetes federation needs
-explicit issuer/JWKS and audience configuration; GKE-specific annotations alone do
-not configure it for DOKS. Keep federation public-key rotation in the runbook.
+`kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems` reads the mapping in `kubernetes/google-secrets.yaml`. It streams payloads through subprocess input without printing them or passing them in command-line arguments. Restart affected app deployments after changing environment-based secrets. Restart the operator after changing its OAuth credential.
 
-References: [Google's external Kubernetes federation guide](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-kubernetes)
-and [External Secrets' Google provider](https://github.com/external-secrets/external-secrets/blob/main/docs/provider/google-secrets-manager.md).
+`./scripts/publish-database-secrets.py` publishes database credentials from protected Terraform state. Run it after provisioning or rotating DO database credentials, then synchronize Kubernetes Secrets and restart the affected app. `./scripts/import-runtime-secrets.py --health /path/to/health --trends /path/to/trends` is a **one-time** legacy import: do not rerun it after settings have changed in Google.
 
-Until continuous synchronization is configured, operator credentials are pulled
-on demand by the Google bootstrap, or can be supplied locally
-to `scripts/bootstrap-operator.sh`, which streams them into a Kubernetes Secret
-without command-line secret arguments or temporary files. The DigitalOcean token
-already in doctl's `freddie-pki` context is read only into Terraform's process
-environment by `scripts/with-doctl.py`.
+Trends uses Workload Identity Federation directly. The `systems` pool's `doks` provider accepts only `system:serviceaccount:systems:trends` from the cluster's uploaded JWKS. That principal has `secretAccessor` and `secretVersionAdder` only on the two Trends API-key secrets. A projected, hourly Kubernetes token is exchanged for short-lived Google credentials. `kubernetes/charts/systems/files/google-credential-config.json` is public configuration, not a private key. The settings UI reads the latest version, caches for 60 seconds, and saves new versions. Removing a key adds an empty version; administrators retain older versions for recovery.
 
-The database bootstrap copies the generated database credentials from protected
-Terraform state into app-specific Kubernetes Secrets. These secrets do not become
-safer merely by also copying them to an external store: doctl config, Terraform
-state/backups, and Kubernetes RBAC all need appropriate access restrictions. Remove
-superseded bootstrap copies when ownership has moved to the selected secret store.
+Run `scripts/configure-google-identity.sh` after DOKS rotates its service-account signing keys (and following cluster upgrades). It updates the provider with `kubectl get --raw /openid/v1/jwks`. Google cannot discover this private issuer automatically. Verify both provider configuration status endpoints from a Trends pod after updates. [Google's external Kubernetes federation guide](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-kubernetes)
 
-Kubernetes Secret synchronization does not restart apps whose secrets arrive via
-environment variables. A credential rotation must coordinate database/provider
-changes, Secret synchronization, pod restarts, and verification. The existing
-Freddie CA signing keys remain outside this cluster; only its public root is used.
+The deployment runner uses the owner-supplied `codex-trends@macro-events-882dcb.iam.gserviceaccount.com` credential at `/home/codex/.config/gcloud/codex-trends.json` (0600). This administrative key stays outside Git and Kubernetes. doctl's `freddie-pki` credential remains in its protected config and is passed only into Terraform's process environment. Terraform state necessarily contains generated database credentials and remains owner-only. Preserve state and restrict access to its backups.
+
+DigitalOcean manages cluster image-pull credentials through the DOCR integration. App pods reference its `freddierice-systems` pull Secret. Builds use an expiring one-hour push credential, removed from the runner after the build. Images contain no `.env`, SQLite databases, API keys, Terraform state, or Google credentials.
+
+Health's refresh/access tokens, provider ownership, and OAuth state are application data inside its PostgreSQL database; the import preserves them. They are distinct from the OAuth client credentials stored in Secret Manager. The Freddie CA signing keys remain on the existing CA; this cluster contains only its public root. cert-manager generates and maintains its ACME account key in `systems/freddie-acme-account` and the leaf certificate/key pairs in `systems/health-tls` and `systems/trends-tls`. Gateway listeners reference those Kubernetes TLS Secrets directly. These rotating controller-managed keys stay in Kubernetes; Google holds the app/deployment credentials listed above. Back up the account and TLS Secrets as part of cluster recovery. The old gateway volume is unmounted and retained only for recovery.

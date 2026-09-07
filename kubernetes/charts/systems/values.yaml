@@ -1,20 +1,16 @@
 postgresMigrationVerified: false
+backgroundJobsEnabled: false
 imagePullSecrets: []
 
 gateway:
-  image: traefik:v3.7.12
   hostname: systems
-  storageClass: do-block-storage
-  storage: 1Gi
 
 privateCA:
   hostname: ca.freddie.xyz
   directory: https://ca.freddie.xyz/acme/acme/directory
   tailnetFQDN: ca-nyc1.impala-hen.ts.net
-  # Matches the existing CA's approximately 24-hour leaf certificates.
-  certificatesDurationHours: 24
 
-# Only the gateway uses this resolver. DOKS-managed CoreDNS is not changed.
+# Only cert-manager uses this resolver. DOKS-managed CoreDNS is not changed.
 dns:
   image: coredns/coredns:1.14.7
   serviceIP: 10.71.0.53

@@ -34,16 +34,17 @@ data "digitalocean_vpc_nat_gateway" "systems" {
 }
 
 resource "digitalocean_kubernetes_cluster" "systems" {
-  name             = "systems"
-  region           = var.region
-  version          = data.digitalocean_kubernetes_versions.systems.latest_version
-  vpc_uuid         = digitalocean_vpc.systems.id
-  isolated_workers = true
-  cluster_subnet   = "10.72.0.0/16"
-  service_subnet   = "10.71.0.0/20"
-  ha               = true
-  auto_upgrade     = true
-  surge_upgrade    = true
+  name                 = "systems"
+  region               = var.region
+  version              = data.digitalocean_kubernetes_versions.systems.latest_version
+  vpc_uuid             = digitalocean_vpc.systems.id
+  isolated_workers     = true
+  cluster_subnet       = "10.72.0.0/16"
+  service_subnet       = "10.71.0.0/20"
+  ha                   = true
+  auto_upgrade         = true
+  surge_upgrade        = true
+  registry_integration = true
 
   control_plane_firewall {
     enabled = true
@@ -71,7 +72,7 @@ resource "digitalocean_kubernetes_cluster" "systems" {
   }
 
   # Isolation is set at creation and needs a functioning default NAT gateway.
-  depends_on = [digitalocean_vpc_nat_gateway.systems]
+  depends_on = [digitalocean_vpc_nat_gateway.systems, digitalocean_container_registry.systems]
   lifecycle {
     prevent_destroy = true
   }

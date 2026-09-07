@@ -1,77 +1,63 @@
-apiVersion: v1
-kind: PersistentVolumeClaim
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
 metadata:
-  # Retain the existing claim and its old contents for rollback. Traefik uses
-  # its own /data/traefik-acme.json file on the same persistent volume.
-  name: systems-caddy-data
-  annotations:
-    helm.sh/resource-policy: keep
+  name: systems
 spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: {{ .Values.gateway.storageClass }}
-  resources:
-    requests:
-      storage: {{ .Values.gateway.storage }}
+  controllerName: traefik.io/gateway-controller
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
 metadata:
-  name: systems-gateway
+  name: systems
 spec:
-  replicas: 1
-  # A single Traefik owns certificate state on a ReadWriteOnce volume.
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: systems-gateway
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: systems-gateway
-      annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
-    spec:
-      automountServiceAccountToken: false
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
-        seccompProfile: {type: RuntimeDefault}
-      dnsPolicy: None
-      dnsConfig:
-        nameservers: [{{ .Values.dns.serviceIP | quote }}]
-        searches: [{{ printf "%s.svc.cluster.local" .Release.Namespace | quote }}, svc.cluster.local, cluster.local]
-        options: [{name: ndots, value: "1"}]
-      containers:
-        - name: traefik
-          image: {{ .Values.gateway.image | quote }}
-          command: [traefik]
-          args: [--configFile=/etc/systems/traefik.yaml]
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-          ports:
-            - {name: http, containerPort: 8080}
-            - {name: https, containerPort: 8443}
-            - {name: health, containerPort: 8081}
-          readinessProbe:
-            httpGet: {path: /ping, port: health}
-          livenessProbe:
-            httpGet: {path: /ping, port: health}
-          resources:
-            requests: {cpu: 50m, memory: 64Mi}
-            limits: {memory: 256Mi}
-          volumeMounts:
-            - {name: config, mountPath: /etc/systems, readOnly: true}
-            - {name: data, mountPath: /data}
-            - {name: tmp, mountPath: /tmp}
-      volumes:
-        - name: config
-          configMap: {name: systems-config}
-        - name: data
-          persistentVolumeClaim: {claimName: systems-caddy-data}
-        - name: tmp
-          emptyDir: {}
+  gatewayClassName: systems
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces: {from: Same}
+    {{- range $name, $app := .Values.apps }}
+    - name: {{ $name }}-https
+      hostname: {{ $app.hostname | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - {kind: Secret, name: {{ $name }}-tls}
+      allowedRoutes:
+        namespaces: {from: Same}
+    {{- end }}
+{{- range $name, $app := .Values.apps }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}-redirect
+spec:
+  parentRefs:
+    - {name: systems, sectionName: http}
+  hostnames: [{{ $app.hostname | quote }}]
+  rules:
+    - matches:
+        - {method: GET}
+        - {method: HEAD}
+      filters:
+        - type: RequestRedirect
+          requestRedirect: {scheme: https, port: 443, statusCode: 301}
+{{- if $app.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+spec:
+  parentRefs:
+    - {name: systems, sectionName: {{ $name }}-https}
+  hostnames: [{{ $app.hostname | quote }}]
+  rules:
+    - backendRefs:
+        - {name: {{ $name }}, port: 8000}
+{{- end }}
+{{- end }}

@@ -11,16 +11,16 @@ spec:
   loadBalancerClass: tailscale
   allocateLoadBalancerNodePorts: false
   selector:
-    app.kubernetes.io/name: systems-gateway
+    systems.freddie.xyz/gateway: 'true'
   ports:
     - name: http
       port: 80
-      targetPort: http
+      targetPort: web
     - name: https
       port: 443
-      targetPort: https
+      targetPort: websecure
 ---
-# Traefik needs outbound tailnet access to the existing private ACME service.
+# cert-manager needs outbound tailnet access to the existing private ACME service.
 apiVersion: v1
 kind: Service
 metadata:

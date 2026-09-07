@@ -9,50 +9,67 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: tailscale-to-gateway
+  name: gateway-ingress
 spec:
   podSelector:
-    matchLabels: {app.kubernetes.io/name: systems-gateway}
+    matchLabels: {systems.freddie.xyz/gateway: 'true'}
   policyTypes: [Ingress]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: tailscale}
       ports:
-        - {port: 8080, protocol: TCP}
-        - {port: 8443, protocol: TCP}
+        - {port: 80, protocol: TCP}
+        - {port: 443, protocol: TCP}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: cert-manager}
+      ports:
+        - {port: 80, protocol: TCP}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: gateway-to-dns
+  name: cert-manager-to-dns
 spec:
   podSelector:
     matchLabels: {app.kubernetes.io/name: systems-dns}
   policyTypes: [Ingress]
   ingress:
     - from:
-        - podSelector:
-            matchLabels: {app.kubernetes.io/name: systems-gateway}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: cert-manager}
       ports:
         - {port: 1053, protocol: TCP}
         - {port: 1053, protocol: UDP}
-{{- range $name, $app := .Values.apps }}
-{{- if $app.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: gateway-to-{{ $name }}
+  name: gateway-to-applications
 spec:
   podSelector:
-    matchLabels: {app.kubernetes.io/name: {{ $name }}}
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [health, trends]}
   policyTypes: [Ingress]
   ingress:
     - from:
         - podSelector:
-            matchLabels: {app.kubernetes.io/name: systems-gateway}
+            matchLabels: {systems.freddie.xyz/gateway: 'true'}
       ports:
         - {port: 8000, protocol: TCP}
-{{- end }}
-{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-to-acme-solvers
+spec:
+  podSelector:
+    matchLabels: {acme.cert-manager.io/http01-solver: 'true'}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {systems.freddie.xyz/gateway: 'true'}
+      ports:
+        - {port: 8089, protocol: TCP}

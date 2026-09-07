@@ -35,6 +35,7 @@ spec:
         app.kubernetes.io/name: {{ $name }}
     spec:
       automountServiceAccountToken: false
+      serviceAccountName: {{ $name }}
       {{- with $.Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -66,6 +67,7 @@ spec:
           envFrom:
             - secretRef: {name: {{ $name }}-runtime, optional: true}
           env:
+            - {name: REQUIRE_POSTGRES, value: "1"}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef: {name: {{ $name }}-database, key: DATABASE_URL}
@@ -76,9 +78,17 @@ spec:
             - {name: {{ $app.originVariable }}, value: {{ printf "https://%s" $app.hostname | quote }}}
             {{- if eq $name "trends" }}
             - {name: TRENDS_ALLOWED_HOSTS, value: {{ $app.hostname | quote }}}
+            - {name: GOOGLE_APPLICATION_CREDENTIALS, value: /etc/google/credentials.json}
+            - {name: GOOGLE_CLOUD_PROJECT, value: macro-events-882dcb}
+            - {name: TRENDS_THETADATA_SECRET, value: projects/186933910776/secrets/systems-trends-thetadata}
+            - {name: TRENDS_FMP_SECRET, value: projects/186933910776/secrets/systems-trends-fmp}
+            - {name: TRENDS_QUOTES_POLL, value: {{ $.Values.backgroundJobsEnabled | ternary "1" "0" | quote }}}
+            - {name: TRENDS_SIGNALS_POLL, value: {{ $.Values.backgroundJobsEnabled | ternary "1" "0" | quote }}}
+            {{- else }}
+            - {name: HEALTH_SYNC_ENABLED, value: {{ $.Values.backgroundJobsEnabled | ternary "1" "0" | quote }}}
             {{- end }}
           # Local probes avoid redirect-only responses being treated as healthy.
-          # /ready must query PostgreSQL in the future PostgreSQL-capable app.
+          # /ready verifies the database schema using the app's own credentials.
           startupProbe:
             exec:
               command: [python, /etc/probes/check.py, {{ $app.hostname | quote }}, /ready]
@@ -101,6 +111,10 @@ spec:
             - {name: postgres-ca, mountPath: /etc/postgresql, readOnly: true}
             - {name: probes, mountPath: /etc/probes, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            {{- if eq $name "trends" }}
+            - {name: google-config, mountPath: /etc/google, readOnly: true}
+            - {name: google-token, mountPath: /var/run/google, readOnly: true}
+            {{- end }}
       volumes:
         - name: postgres-ca
           configMap: {name: postgres-ca}
@@ -108,6 +122,23 @@ spec:
           configMap: {name: systems-probes}
         - name: tmp
           emptyDir: {}
+        {{- if eq $name "trends" }}
+        - name: google-config
+          configMap: {name: google-workload-identity}
+        - name: google-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: https://iam.googleapis.com/projects/186933910776/locations/global/workloadIdentityPools/systems/providers/doks
+                  expirationSeconds: 3600
+                  path: token
+        {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+automountServiceAccountToken: false
 {{- end }}
 {{- end }}
 ---

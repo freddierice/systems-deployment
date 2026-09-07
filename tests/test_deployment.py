@@ -30,22 +30,33 @@ class ChartTests(unittest.TestCase):
         self.assertEqual({p["port"] for p in lbs[0]["spec"]["ports"]}, {80, 443})
         self.assertFalse(any(r["metadata"]["name"] in ("health", "trends") for r in resources))
         self.assertFalse(any(r["spec"].get("type") == "NodePort" for r in services))
-        config = next(r["data"] for r in resources if r["metadata"]["name"] == "systems-config")
-        static = yaml.safe_load(config["traefik.yaml"])
-        acme = static["certificatesResolvers"]["freddie"]["acme"]
-        self.assertEqual(acme["caServer"], "https://ca.freddie.xyz/acme/acme/directory")
-        self.assertEqual(acme["caCertificates"], ["/etc/systems/root_ca.crt"])
-        self.assertEqual(acme["httpChallenge"]["entryPoint"], "web")
-        self.assertEqual(acme["certificatesDuration"], 24)
-        self.assertNotIn("tlsChallenge", acme)
-        self.assertNotIn("api", static)
-        routes = yaml.safe_load(config["routes.yaml"])
-        self.assertTrue(routes["tls"]["options"]["default"]["sniStrict"])
-        for name in ("health", "trends"):
-            self.assertEqual(routes["http"]["services"][name]["loadBalancer"]["servers"], [])
+        self.assertFalse(any(r["kind"] == "PersistentVolumeClaim" for r in resources))
+        config = next(r["data"] for r in resources if r["metadata"]["name"] == "systems-dns-config")
+        self.assertEqual(set(config), {"Corefile"})
         self.assertIn("ca-tailnet.systems.svc.cluster.local", config["Corefile"])
-        self.assertIn("BEGIN CERTIFICATE", config["root_ca.crt"])
-        self.assertNotIn("PRIVATE KEY", config["root_ca.crt"])
+        self.assertIn("systems-gateway.systems.svc.cluster.local", config["Corefile"])
+        gateway = next(r for r in resources if r["kind"] == "Gateway")
+        certificates = {r["spec"]["secretName"]: r for r in resources if r["kind"] == "Certificate"}
+        for listener in gateway["spec"]["listeners"]:
+            if listener["protocol"] == "HTTPS":
+                cert = certificates[listener["tls"]["certificateRefs"][0]["name"]]
+                self.assertEqual(cert["spec"]["dnsNames"], [listener["hostname"]])
+                self.assertEqual(cert["spec"]["renewBefore"], "8h")
+        issuer = next(r for r in resources if r["kind"] == "Issuer")
+        solver = issuer["spec"]["acme"]["solvers"][0]["http01"]["gatewayHTTPRoute"]
+        self.assertEqual(solver["parentRefs"][0]["sectionName"], "http")
+        self.assertEqual(solver["serviceType"], "ClusterIP")
+        self.assertTrue(issuer["spec"]["acme"]["caBundle"])
+        traefik = yaml.safe_load((ROOT / "kubernetes/traefik.values.yaml").read_text())
+        # Cross-chart contract: incorrect named target ports silently leave the
+        # Tailscale Service without HTTPS endpoints, despite healthy pods.
+        ports = traefik["ports"]
+        for port in lbs[0]["spec"]["ports"]:
+            self.assertEqual(ports[port["targetPort"]]["port"], port["port"])
+        self.assertEqual(lbs[0]["spec"]["selector"], traefik["deployment"]["podLabels"])
+        self.assertFalse(traefik["service"]["enabled"])
+        for route in (r for r in resources if r["kind"] == "HTTPRoute"):
+            self.assertEqual({m["method"] for m in route["spec"]["rules"][0]["matches"]}, {"GET", "HEAD"})
         for resource in resources:
             if resource["kind"] == "Deployment":
                 pod = resource["spec"]["template"]["spec"]
@@ -69,9 +80,9 @@ class ChartTests(unittest.TestCase):
         result = render(*args)
         self.assertEqual(result.returncode, 0, result.stderr)
         resources = list(yaml.safe_load_all(result.stdout))
-        routes = yaml.safe_load(next(r["data"]["routes.yaml"] for r in resources if r["metadata"]["name"] == "systems-config"))
+        routes = {r["metadata"]["name"]: r for r in resources if r["kind"] == "HTTPRoute"}
         for name in ("health", "trends"):
-            self.assertEqual(routes["http"]["services"][name]["loadBalancer"]["servers"], [{"url": f"http://{name}.systems.svc.cluster.local:8000"}])
+            self.assertEqual(routes[name]["spec"]["rules"][0]["backendRefs"], [{"name": name, "port": 8000}])
             svc = next(r for r in resources if r["kind"] == "Service" and r["metadata"]["name"] == name)
             self.assertEqual(svc["spec"]["type"], "ClusterIP")
             deploy = next(r for r in resources if r["kind"] == "Deployment" and r["metadata"]["name"] == name)
@@ -83,8 +94,8 @@ class ChartTests(unittest.TestCase):
             self.assertEqual(container["readinessProbe"]["exec"]["command"][-1], "/ready")
             self.assertEqual(container["livenessProbe"]["exec"]["command"][-1], "/health")
             self.assertIs(container["securityContext"]["readOnlyRootFilesystem"], True)
-            policy = next(r for r in resources if r["metadata"]["name"] == f"gateway-to-{name}")
-            self.assertEqual(policy["spec"]["ingress"][0]["from"], [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "systems-gateway"}}}])
+            policy = next(r for r in resources if r["metadata"]["name"] == "gateway-to-applications")
+            self.assertEqual(policy["spec"]["ingress"][0]["from"], [{"podSelector": {"matchLabels": {"systems.freddie.xyz/gateway": "true"}}}])
 
 
 class BootstrapTests(unittest.TestCase):
@@ -114,6 +125,29 @@ class BootstrapTests(unittest.TestCase):
     def test_grants_script_is_valid_shell(self):
         result = subprocess.run(["sh", "-n"], input=self.bootstrap.grant_script(), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class RuntimeIdentityTests(unittest.TestCase):
+    def test_production_uses_docr_and_short_lived_google_identity(self):
+        root = Path(__file__).resolve().parents[1]
+        rendered = subprocess.check_output([
+            'helm', 'template', 'systems', str(root / 'kubernetes/charts/systems'),
+            '--namespace', 'systems', '-f', str(root / 'kubernetes/values.production.yaml')
+        ], text=True)
+        documents = list(yaml.safe_load_all(rendered))
+        apps = {d['metadata']['name']: d for d in documents if d and d['kind'] == 'Deployment' and d['metadata']['name'] in ('health', 'trends')}
+        for name, deployment in apps.items():
+            pod = deployment['spec']['template']['spec']
+            self.assertEqual(pod['imagePullSecrets'], [{'name': 'freddierice-systems'}])
+            self.assertFalse(pod['automountServiceAccountToken'])
+            self.assertEqual(pod['serviceAccountName'], name)
+            self.assertTrue(pod['containers'][0]['image'].startswith('registry.digitalocean.com/freddierice-systems/' + name + '@sha256:'))
+        pod = apps['trends']['spec']['template']['spec']
+        volumes = {v['name']: v for v in pod['volumes']}
+        token = volumes['google-token']['projected']['sources'][0]['serviceAccountToken']
+        self.assertEqual(token['expirationSeconds'], 3600)
+        self.assertIn('workloadIdentityPools/systems/providers/doks', token['audience'])
+        self.assertNotIn('secret', volumes['google-config'])
 
 
 if __name__ == "__main__":

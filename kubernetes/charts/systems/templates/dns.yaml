@@ -57,4 +57,4 @@ spec:
             - {name: config, mountPath: /etc/systems, readOnly: true}
       volumes:
         - name: config
-          configMap: {name: systems-config}
+          configMap: {name: systems-dns-config}

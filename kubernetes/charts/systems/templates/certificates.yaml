@@ -1,0 +1,33 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: freddie
+spec:
+  acme:
+    server: {{ .Values.privateCA.directory | quote }}
+    caBundle: {{ .Files.Get "files/root_ca.crt" | b64enc | quote }}
+    privateKeySecretRef:
+      name: freddie-acme-account
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - {name: systems, namespace: {{ .Release.Namespace }}, kind: Gateway, sectionName: http}
+            serviceType: ClusterIP
+{{- range $name, $app := .Values.apps }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $name }}-tls
+spec:
+  secretName: {{ $name }}-tls
+  duration: 24h
+  renewBefore: 8h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  dnsNames: [{{ $app.hostname | quote }}]
+  issuerRef: {name: freddie, kind: Issuer}
+{{- end }}

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: google-workload-identity
+data:
+  credentials.json: |
+{{ .Files.Get "files/google-credential-config.json" | indent 4 }}

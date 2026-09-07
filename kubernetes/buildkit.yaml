@@ -1,0 +1,39 @@
+# Temporary builder. Apply only for builds; delete after pushing images.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: systems-migration
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: systems-migration
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: buildkitd
+  namespace: systems-migration
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: buildkitd
+      image: moby/buildkit:v0.33.0-rootless
+      args: [--addr, 'tcp://0.0.0.0:1234', --oci-worker-no-process-sandbox, --oci-worker-snapshotter=native]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: Unconfined}
+        appArmorProfile: {type: Unconfined}
+      resources:
+        requests: {cpu: 250m, memory: 256Mi}
+        limits: {memory: 2Gi}
+      volumeMounts:
+        - {name: cache, mountPath: /home/user/.local/share/buildkit}
+  volumes:
+    - name: cache
+      emptyDir: {}

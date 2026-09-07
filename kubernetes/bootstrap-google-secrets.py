@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Read the two configured Google secrets and bootstrap tailscale/operator-oauth."""
+"""Sync runtime secrets from Google without putting values in files or argv."""
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -30,15 +31,29 @@ def read_secret(resource):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--context", required=True)
+    parser.add_argument("--operator-only", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    config = yaml.safe_load((root / "kubernetes/google-secrets.yaml").read_text())["tailscale"]
+    mapping = yaml.safe_load((root / "kubernetes/google-secrets.yaml").read_text())
+    config = mapping["tailscale"]
     # Read both before writing anything. No value is written to a local file,
     # printed, or passed as a subprocess command-line argument.
     child_env = os.environ.copy()
     child_env["TS_OAUTH_CLIENT_ID"] = read_secret(config["clientID"])
     child_env["TS_OAUTH_CLIENT_SECRET"] = read_secret(config["clientSecret"])
     subprocess.run(["bash", str(root / "scripts/bootstrap-operator.sh"), args.context], env=child_env, check=True)
+    if args.operator_only:
+        return
+    for name, resource in mapping.get("runtime", {}).items():
+        values = json.loads(read_secret(resource))
+        if not isinstance(values, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in values.items()):
+            raise ValueError("Runtime secret must be a JSON object of strings")
+        manifest = {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name, "namespace": "systems"}, "type": "Opaque", "stringData": values}
+        result = subprocess.run(["kubectl", "--context", args.context, "apply", "--server-side", "--force-conflicts", "--field-manager=systems-secrets", "-f", "-"], input=json.dumps(manifest), text=True, capture_output=True)
+        if result.returncode:
+            raise RuntimeError("Cannot synchronize " + name)
+        print("Synchronized " + name)
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,37 @@
+crds:
+  enabled: true
+  keep: true
+podDnsPolicy: None
+podDnsConfig:
+  nameservers:
+  - 10.71.0.53
+  searches:
+  - cert-manager.svc.cluster.local
+  - svc.cluster.local
+  - cluster.local
+  options:
+  - name: ndots
+    value: '1'
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+webhook:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+cainjector:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+config:
+  gatewayAPI:
+    enabled: true

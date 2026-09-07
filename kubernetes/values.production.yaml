@@ -1,0 +1,11 @@
+postgresMigrationVerified: true
+backgroundJobsEnabled: true
+imagePullSecrets:
+- name: freddierice-systems
+apps:
+  health:
+    enabled: true
+    image: registry.digitalocean.com/freddierice-systems/health@sha256:5c56bdd10237fecd1d388e441404c32d70c387568dde5ebdf4ba288780eaea7a
+  trends:
+    enabled: true
+    image: registry.digitalocean.com/freddierice-systems/trends@sha256:9a58c69433b52fbd3b36a56a6786588818bfbf303f90bd9f8a9e90bb9a33117e

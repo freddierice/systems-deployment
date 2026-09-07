@@ -5,18 +5,21 @@ Terraform creates only the DigitalOcean infrastructure in `../infra`.
 
 | File | Purpose |
 | --- | --- |
-| `deploy.sh` | Validate values and cluster networking, then install/upgrade the operator and systems chart |
+| `deploy.sh` | Validate values and cluster networking, then install Gateway API, the operator, cert-manager, Traefik and the systems chart |
 | `tailscale-operator.values.yaml` | Operator settings; OAuth credentials stay in an existing Secret |
+| `install-gateway-api.py` | Checksum-pinned standard CRDs; DOKS external ownership and downgrade guards |
+| `traefik.values.yaml`, `cert-manager.values.yaml` | Controller configuration; Gateway API only and HTTP-01 support |
+| `values.production.yaml` | Live DOCR digests, app enablement and workload identity |
 | `values.example.yaml` | Deployment settings with apps disabled pending PostgreSQL migration |
-| `google-secrets.yaml` | The two Google Secret Manager resource names for operator credentials |
-| `bootstrap-google-secrets.py` | Read those versions through gcloud and install the operator Secret |
-| `charts/systems/` | Traefik gateway, private CA egress, DNS, network policies, and optional applications |
+| `google-secrets.yaml` | Google Secret Manager resource mappings for operator and app credentials |
+| `bootstrap-google-secrets.py` | Read latest versions through gcloud and synchronize Kubernetes Secrets |
+| `charts/systems/` | Gateway/HTTPRoutes, Issuer/Certificates, Tailscale Services, private DNS, network policies and apps |
 
 After saving the cluster kubeconfig and signing into Google with Secret Accessor
 permission on the two configured secrets:
 
 ```sh
-python3 kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems
+python3 kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems --operator-only
 cp kubernetes/values.example.yaml kubernetes/values.local.yaml
 helm template systems kubernetes/charts/systems \
   --namespace systems --values kubernetes/values.local.yaml
@@ -52,3 +55,7 @@ See [Tailscale's tag rules](https://tailscale.com/docs/features/tags).
 Applications require `postgresMigrationVerified: true` and immutable image digests
 before their Deployments can render. See `docs/migration.md` for the required
 PostgreSQL code and data changes.
+
+For the live deployment, synchronize all secrets without `--operator-only` and run `bash kubernetes/deploy.sh do-nyc1-systems`; it defaults to production values. cert-manager writes TLS Secrets in `systems`, beside their consuming Gateway. App pods use plain HTTP behind Traefik; PostgreSQL TLS uses its separate DigitalOcean CA. Certificate issuance and renewal need the CA's DNS to resolve both app hostnames to the Tailscale gateway.
+
+Check `kubectl -n systems get gateway,httproute,issuer,certificate` after deployment. On initial provisioning, the Gateway can be pending until cert-manager issues its first certificates. The script reports this as an unfinished deployment; correct CA/DNS access and rerun. Renewals update Secrets and are loaded by Traefik automatically. Keep the DNS service IP in the chart and cert-manager values aligned if changing the service range.

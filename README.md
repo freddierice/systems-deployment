@@ -2,7 +2,7 @@
 
 Terraform for one DigitalOcean Kubernetes cluster named **systems**, with private-only worker IPs, one managed PostgreSQL primary shared by Health and Trends, and a Tailscale load balancer serving **health.freddie.xyz** and **trends.freddie.xyz**.
 
-**Status: infrastructure deployment is tracked in [the deployment record](docs/deployment.md).** Both applications remain on the existing droplet with SQLite. Application deployment is disabled by default and guarded by an explicit PostgreSQL migration flag. See [the application contract and migration checklist](docs/migration.md).
+**Live:** Health and Trends run in DOKS from immutable DOCR images, backed by separate databases on the shared PostgreSQL instance. Their DNS-only A records point to the Tailscale gateway `100.91.90.6`. Google Secret Manager holds deployment and integration credentials. See [the deployment record](docs/deployment.md) and [migration/rollout runbook](docs/migration.md).
 
 ```mermaid
 flowchart LR
@@ -12,7 +12,9 @@ flowchart LR
     C --> T[trends: ClusterIP]
     H --> P[(systems-postgres: health database)]
     T --> P2[(Same instance: trends database)]
-    C --> E[Tailscale CA egress proxy]
+    CM[cert-manager] --> S[Kubernetes TLS Secrets]
+    S --> C
+    CM --> E[Tailscale CA egress proxy]
     E --> CA[Existing ca.freddie.xyz]
     CA -->|HTTP-01 on port 80| L
     N[Private DOKS workers] --> NAT[VPC NAT gateway: outbound internet]
@@ -22,8 +24,8 @@ flowchart LR
 
 | Directory | Resources |
 | --- | --- |
-| `infra/` | `systems` VPC in `nyc1`, default NAT gateway, DOKS with isolated workers and a control-plane firewall, one PostgreSQL primary, two databases and logins, database trusted-source firewall |
-| `kubernetes/` (Helm directly) | Tailscale Operator, local `systems` Helm chart, Traefik and persistent certificate storage, private CA routing, gateway-specific DNS resolver, network policies, optional app Deployments |
+| `infra/` | `systems` VPC in `nyc1`, default NAT gateway, DOKS with isolated workers and a control-plane firewall, one PostgreSQL primary, two databases and logins, database trusted-source firewall, Basic DOCR registry in `nyc3` |
+| `kubernetes/` (Helm directly) | Tailscale Operator, local `systems` Helm chart, Traefik Gateway API, cert-manager and TLS Secrets, private CA routing, cert-manager DNS resolver, network policies, app Deployments and Google workload identity configuration |
 
 Terraform manages only DigitalOcean resources in `infra/`. Kubernetes resources are installed separately by `kubernetes/deploy.sh` using Helm; there are no Helm or Kubernetes Terraform providers or resources. Create infrastructure and obtain a working kubeconfig before deploying Kubernetes configuration. Application images and database migrations belong in their application repositories. CI validates configuration with mocked providers and never applies infrastructure.
 
@@ -37,21 +39,15 @@ Default capacity is two `s-2vcpu-4gb` workers and one `db-s-1vcpu-2gb` PostgreSQ
 - VPC `10.70.0.0/20`, services `10.71.0.0/20`, pods `10.72.0.0/16`. Confirm these do not overlap existing VPCs or advertised tailnet routes before creation. The gateway's private DNS service reserves `10.71.0.53`.
 - PostgreSQL uses its **private hostname**, a Kubernetes trusted-source firewall rule, and `sslmode=verify-full` with the DigitalOcean database CA. The managed service may still have a public hostname; this repository does not publish it to applications or allow world access. App-level database isolation is established and tested by the bootstrap job, not merely by creating two logins.
 
-Existing private PKI is retained: Traefik gets certificates from `https://ca.freddie.xyz/acme/acme/directory`, using HTTP-01 and the public root certificate in `kubernetes/charts/systems/files/root_ca.crt`. Root SHA-256: `53de014733269d464ed65fac577936986355e2a55cf3d0ae81623aacf8daeab4`. No CA signing key is copied or required.
+Existing private PKI is retained: cert-manager gets certificates from `https://ca.freddie.xyz/acme/acme/directory`, trusting the public root in `kubernetes/charts/systems/files/root_ca.crt`. Root SHA-256: `53de014733269d464ed65fac577936986355e2a55cf3d0ae81623aacf8daeab4`. No CA signing key is copied.
 
-Traefik `v3.7.12` uses the file provider: Helm renders `traefik.yaml` and
-`routes.yaml` into the gateway ConfigMap. GET/HEAD on HTTP receive a permanent
-HTTPS redirect; other HTTP app requests have no matching router and receive
-404. The internal ACME challenge route remains available on port 80. Disabled
-apps have empty backend pools and return 503 once a valid TLS certificate is
-available. Strict SNI rejects TLS connections without a matching certificate.
-There is no exposed dashboard or gateway Kubernetes API credential.
+Traefik `v3.7.12` watches the Gateway API. The `systems` Gateway has one HTTP listener and a hostname-specific HTTPS listener for each app. Its `certificateRefs` point to `health-tls` and `trends-tls` Secrets in the same namespace. HTTPRoutes attach app backends and redirect HTTP GET/HEAD to HTTPS; unmatched HTTP writes receive 404. Disabled apps have no backend HTTPRoute. The dashboard, Ingress provider and Traefik-specific CRD provider are disabled.
 
-`privateCA.certificatesDurationHours: 24` aligns the renewal schedule with the
-existing CA's approximately 24-hour leaf certificates. Adjust it if the CA's
-issuance policy changes. [Traefik ACME configuration](https://doc.traefik.io/traefik/reference/install-configuration/tls/certificate-resolvers/acme/)
+cert-manager `v1.21.1` owns those TLS Secrets and renews 24-hour certificates eight hours before expiry. Its namespaced `freddie` Issuer uses the **Gateway API HTTP-01 solver**, creating temporary HTTPRoutes under the Gateway's port-80 listener. The existing CA offers HTTP-01 only. Traefik watches Secret changes and reloads certificates automatically, with no ACME files or persistent certificate volume. [cert-manager Gateway HTTP-01](https://cert-manager.io/docs/configuration/acme/http01/)
 
-Traefik needs to reach the CA over Tailscale. An egress Service targets `ca-nyc1.impala-hen.ts.net`. A dedicated DNS resolver rewrites **only** `ca.freddie.xyz` for the gateway to this Service; Traefik still validates the certificate against `ca.freddie.xyz`. DOKS-managed CoreDNS is unchanged. The CA must also be allowed to connect back to the new load balancer on TCP 80 to validate and renew certificates. [Tailscale egress](https://tailscale.com/docs/kubernetes-operator/egress/access-tailnet-service)
+A dedicated DNS service at `10.71.0.53` resolves the CA hostname through its Tailscale egress Service and app hostnames through the gateway ClusterIP for cert-manager's self-checks. Only cert-manager uses this DNS configuration; DOKS-managed CoreDNS is unchanged. The CA validates the real app DNS through Tailscale on TCP 80. Network policies permit both the controller's self-check and Traefik's access to temporary solver pods.
+
+The deployment script installs the checksum-pinned Gateway API `v1.6.1` standard bundle before either controller. DOKS's older bundled CRDs are upgraded using its documented `doks.digitalocean.com/install-policy: external` annotation. The installer refuses to downgrade newer CRDs or remove a stored API version. It manages API definitions, without changing DOKS's Cilium configuration. [DOKS third-party Gateway support](https://docs.digitalocean.com/products/kubernetes/how-to/use-gateway-api/)
 
 ## Validate locally
 
@@ -102,26 +98,27 @@ Use these commands to reproduce or update the deployment. See the deployment rec
    ```sh
    # Initial deployment: use the credential supplied on the deployment droplet.
    gcloud auth activate-service-account --key-file=/home/codex/.config/gcloud/codex-trends.json
-   python3 kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems
+   python3 kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems --operator-only
    cp kubernetes/values.example.yaml kubernetes/values.local.yaml
    bash kubernetes/deploy.sh do-nyc1-systems kubernetes/values.local.yaml
    ```
 
-   Keep both `apps.*.enabled` flags and `postgresMigrationVerified` set to `false`. Once Tailscale credentials are available, the gateway serves preparation responses and certificate issuance may retry until CA validation DNS targets it. This does not change existing DNS or the droplet.
+   Keep both `apps.*.enabled` flags and `postgresMigrationVerified` set to `false`. Once Tailscale credentials are available, the gateway has no app backend routes and certificate issuance may retry until CA validation DNS targets it. This does not change existing DNS or the droplet.
 
 6. Initialize database grants and Kubernetes Secrets:
 
    ```sh
    python3 scripts/bootstrap-database.py --context do-nyc1-systems
+   python3 scripts/publish-database-secrets.py
    ```
 
    The script reads sensitive Terraform outputs through a pipe, runs an ephemeral PostgreSQL client Job in the cluster, verifies each login can connect to its own database and cannot connect to the other, and then writes `health-database` and `trends-database` Secrets. Database access uses the private endpoint with certificate verification. The admin Secret and Job are removed on completion or failure. A forced process termination may require manually deleting resources named `database-bootstrap-*`. Rerun after a password/CA rotation and restart the affected app pods; environment variables do not update in existing pods.
 
-7. Complete the [app migration and cutover checklist](docs/migration.md). Supply immutable app images and registry pull Secrets. Move per-app integration settings into optional `health-runtime`/`trends-runtime` Kubernetes Secrets, using a secret manager or protected local env files. Do not copy SQLite paths, loopback-only sidecar URLs, or droplet service settings unchanged. App PostgreSQL credentials come only from their dedicated database Secrets.
+7. Follow the [app migration and rollout runbook](docs/migration.md). Build and push both images to DOCR, synchronize Google secrets, configure Trends workload federation, and import consistent SQLite snapshots with the apps' versioned migration commands. Production deployment uses `kubernetes/values.production.yaml`; the chart's default/example values remain disabled for safe initial provisioning. See [secret ownership and rotation](docs/secrets.md).
 
 ## DNS and certificate cutover
 
-DNS is intentionally a separate cutover step because the current Cloudflare records route to the live SQLite deployment. Keep **DNS only** (no Cloudflare proxy). Obtain the new Tailscale IPv4 from the `systems` device in the Tailscale admin console or from Service status if populated:
+DNS is intentionally a separate cutover step because application data and certificates must be ready before traffic switches. Keep **DNS only** (no Cloudflare proxy). Obtain the new Tailscale IPv4 from the `systems` device in the Tailscale admin console or from Service status if populated:
 
 ```sh
 kubectl --context do-nyc1-systems -n systems get service systems-gateway -o json
@@ -129,6 +126,6 @@ kubectl --context do-nyc1-systems -n systems get service systems-gateway -o json
 
 The status may report a MagicDNS hostname; resolve it from a tailnet client to get its `100.x` address. At cutover, replace the existing `100.66.233.125` A-record targets for **health** and **trends** with that address. Check for stale AAAA records. The apex `freddie.xyz` and CA DNS are unaffected. Devices still need Tailscale access and the Freddie root installed.
 
-HTTP-01 is a two-way dependency: Traefik must reach the CA, and the CA's DNS must resolve each application hostname to the new gateway. A client-side `curl --resolve` alone does not satisfy CA validation. Before cutover, use a deliberate temporary DNS override on the CA resolver to issue and test certificates while normal users stay on the droplet; remove it once DNS is switched. Otherwise budget an issuance window during cutover. Verify certificate renewal across the existing short certificate lifetime, including after a gateway restart. Changing/deleting a Tailscale proxy's Kubernetes identity can change its tailnet IP and require a DNS update.
+HTTP-01 is a two-way dependency: cert-manager must reach the CA, and the CA's DNS must resolve each application hostname to the new gateway. A client-side `curl --resolve` alone does not satisfy CA validation. Before cutover, use a deliberate temporary DNS override on the CA resolver to issue and test certificates while normal users stay on the droplet; remove it once DNS is switched. Otherwise budget an issuance window during cutover. Verify certificate renewal across the existing short certificate lifetime, including after a gateway restart. Changing/deleting a Tailscale proxy's Kubernetes identity can change its tailnet IP and require a DNS update.
 
-The gateway PVC retains certificate/account state (`helm.sh/resource-policy: keep`). Its historical name, `systems-caddy-data`, is retained to reuse the existing volume. Traefik stores its own state in `/data/traefik-acme.json`; previous Caddy files remain available for rollback and are not consumed by Traefik. Preserve the volume across chart uninstall/reinstall; do not run multiple independent Traefik replicas against the same single-writer certificate store. Keep and back up operator-managed Secrets too, because they contain Tailscale device identity. A rollback after PostgreSQL has accepted new writes requires data reconciliation; pointing DNS back to the stale SQLite files would lose access to those writes.
+Back up cert-manager's `freddie-acme-account`, `health-tls`, and `trends-tls` Secrets along with operator-managed Secrets that contain Tailscale device identity. The old `systems-caddy-data` PVC is retained, unmounted, only for recovery from the previous gateway implementation; it is no longer part of the chart. A rollback after PostgreSQL has accepted new writes requires data reconciliation; pointing DNS back to the frozen SQLite files would lose access to those writes.

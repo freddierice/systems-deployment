@@ -1,49 +1,40 @@
-# Application contract and migration checklist
+# Application migration and rollout
 
-This repository prepares infrastructure only. It does **not** modify Health or Trends, convert their databases, build compatible images, move integration processes, or change production DNS. Both apps currently use Python `sqlite3`, SQLite-specific SQL, and filesystem-based initialization. Setting `DATABASE_URL` alone cannot migrate them.
+Health and Trends retain SQLite for local development and use PostgreSQL in their production containers. Each has a versioned `001_initial.sql`, explicit `python -m <app>.migrate` command, and `--import-sqlite` option. Startup checks the schema version; it never creates a SQLite fallback in production. Bound parameters, integer flags, ID sequences, revision locking, and Health integration state are covered by application tests.
 
-## Required app changes before enabling Deployments
+## Images
 
-| Area | Required behavior |
-| --- | --- |
-| Connection | Read `DATABASE_URL`; connect to PostgreSQL when configured; fail startup on a missing/invalid PostgreSQL configuration in production rather than creating SQLite |
-| Driver and SQL | Add a PostgreSQL driver; adapt placeholders, dict rows, generated IDs, `lastrowid`, conflict handling, triggers, PRAGMAs, and SQLite-specific functions |
-| Schema | Versioned PostgreSQL migrations, run explicitly as Jobs before starting app processes; preserve foreign keys, unique/partial indexes, revisions, numeric precision and timestamps |
-| Transactions | Preserve optimistic concurrency and write atomicity; replace `BEGIN IMMEDIATE` locking with explicit PostgreSQL transaction/locking semantics where needed |
-| TLS | Honor `sslmode=verify-full` and the mounted database root CA; never disable verification |
-| HTTP | Python 3.12+ on PATH; `python -m uvicorn health.app:app` or `trends.app:app`; bind port 8000 on the pod interface; trust forwarded protocol only from loopback and the configured pod CIDR |
-| Health | `/health` returns 200 for process liveness; `/ready` checks PostgreSQL connectivity and migration version and returns a non-200 response if not ready |
-| Filesystem | Run as UID/GID 1000 with a read-only root; temporary files go in `/tmp`; no persistent application data stored there |
-| Integrations | Load provider credentials from environment Secrets and persist durable tokens/settings in PostgreSQL; keep background jobs singleton until a coordination mechanism exists |
-| Packaging | Reproducible container builds from the app repo with the lockfile; publish to a private registry; pin deployed images by digest |
+Build from a clean, committed checkout. The temporary rootless BuildKit pod runs in namespace `systems-migration`, behind a default-deny ingress policy. It has no Kubernetes token or host mounts. Delete it after builds. A local Docker-compatible builder can also use each repository's Dockerfile.
 
-The chart supplies `HEALTH_HTTPS_ORIGIN`/`TRENDS_HTTPS_ORIGIN`, Trends' allowed hostname, and the shared `DATABASE_URL` contract. It intentionally bypasses droplet launch scripts that bind to loopback or discover a local Tailscale address. Local health probes send the canonical Host and HTTPS proxy header over loopback and accept only an actual 200, not a redirect.
+```sh
+kubectl apply -f kubernetes/buildkit.yaml
+kubectl -n systems-migration port-forward pod/buildkitd 1234:1234
+# Another terminal; buildctl 0.33.0 or compatible:
+scripts/build-image.py health /path/to/health --metadata /protected/health-image.json
+scripts/build-image.py trends /path/to/trends --metadata /protected/trends-image.json
+```
 
-Health has work-in-progress Measurements/integration changes in the droplet checkout. Include the intended version of that work when planning the migration. Its database includes workouts, routine/settings data, measurement data, integration accounts/tokens, and related history. Do not print or commit token rows.
+After both images are pushed, stop the port-forward and delete the temporary namespace with `kubectl delete namespace systems-migration`.
 
-Trends has multiple schema modules (`db.py`, `macro_db.py`, `stories_db.py`, `story_ideas_db.py`) and SQLite schema history through user version 10 at preparation time. Include journal data, macro boards, people/research, stories, caches/settings and audit history; enumerate the live schema rather than relying on this list as exhaustive. IBKR Gateway, ThetaData, and other droplet-local services are separate operational dependencies. A Kubernetes pod's `127.0.0.1` does not point to the droplet. Keep them on the droplet with explicit private egress routing or containerize them in a subsequent scoped change. Interactive login requirements remain.
+The build script generates a one-hour DOCR push credential and removes its temporary file on exit. The Dockerfiles use a pinned Python base and frozen uv lock. Copy the resulting `@sha256:...` references into `kubernetes/values.production.yaml`. DOCR's Basic registry is `freddierice-systems`, region `nyc3`, with DOKS image-pull integration.
 
-## Rehearsal
+## Final transfer
 
-1. Create consistent SQLite snapshots with each app's existing backup script; verify integrity and foreign keys. Record schema versions, table counts and hashes. Store backups off the droplet with restricted access.
-2. Apply PostgreSQL schema migrations to a disposable rehearsal database. Import without dropping constraints. Preserve IDs, JSON text, booleans, decimal values, revisions, timestamps and relationships; reseed identity sequences beyond the largest imported IDs.
-3. Confirm the import is all-or-nothing or safely resumable and refuses to overwrite an already-populated target. Verify every table's counts and representative records without printing sensitive records. Check audit history, revisions, foreign keys and generated ID sequences.
-4. Run both apps' existing tests against PostgreSQL, adding tests for concurrent edits, transaction rollback, generated IDs, database isolation, reconnects, backups/restores and readiness behavior. SQLite-only test success is insufficient.
-5. Rehearse with external syncs disabled to avoid duplicate integration work. Exercise app reads and representative writes, export, history, background jobs and provider callbacks in a controlled environment. Validate an actual PostgreSQL backup restore.
-6. Verify the private gateway, custom hostname certificate chain, CA egress and HTTP-01 callback routing. Test access from an authorized tailnet device, denial from an unauthorized tailnet identity, and absence of public worker/app reachability. Verify the current DOKS/Cilium preflight. Do not use public exposure as a fallback for an unsuccessful private-access test.
+1. Pass both apps' SQLite and PostgreSQL suites, and rehearse a consistent snapshot import into disposable PostgreSQL. The importer requires matching table sets/schema version, checks SQLite integrity and foreign keys, refuses populated targets, copies all tables with constraints enabled, checks row counts and SHA-256 hashes, and resets generated sequences. Everything commits atomically. Monetary values stay exact text; Health measurements use double precision to preserve SQLite values.
+2. Run `scripts/publish-database-secrets.py`, then `kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems`. The one-time legacy runtime import is described in [secrets.md](secrets.md). Configure workload federation and apply its public ConfigMap.
+3. Set production image digests and enable the app flags with background jobs disabled. `scripts/prepare-migration-pods.py` creates temporary pods from these exact images without starting app processes. Validate private, TLS-verified database access and Trends secret access from these pods. The destination app databases must be empty.
+4. Stop both old writers: `systemctl --user stop health.service trends.service`. Use `scripts/snapshot-sqlite.py SOURCE DESTINATION` for each final snapshot. Preserve the snapshots, old code revisions and systemd configuration, and upload the snapshots to the private migration backup bucket before import.
+5. Stream each snapshot into its migration pod's memory-backed `/migration` directory, then execute `python -m <app>.migrate --import-sqlite /migration/<app>.sqlite3`. Preserve the count/hash reports with the backups. Do not rerun against populated destinations.
+6. Run `kubernetes/deploy.sh do-nyc1-systems kubernetes/values.production.yaml`. Confirm both `/ready` probes, app routes, data counts, and settings/provider configuration before accepting traffic. Production requires `sslmode=verify-full`, non-root users, read-only container roots, and immutable image references.
+7. Run `scripts/app-dns.py` to confirm the two existing DNS-only A records, then `scripts/app-dns.py --switch-to 100.91.90.6`. cert-manager automatically retries Gateway API HTTP-01 issuance after DNS propagation. Wait for both Certificates to become Ready; use `cmctl renew --context do-nyc1-systems -n systems health-tls trends-tls` to exercise renewal when needed. Verify both certificates with the Freddie root and actual HTTPS requests through Tailscale. Old DNS caches can take several minutes to expire.
+8. Enable `backgroundJobsEnabled` and deploy again. Confirm Health's provider sync and Trends' provider workers. Delete migration pods and the temporary builder/test namespace. Keep the old services stopped to avoid divergent writers.
 
-## Final transfer and cutover
+The protected backup bucket is `gs://freddie-systems-migration-186933910776`, with uniform bucket-level access and public access prevention. It contains sensitive app data; grant access only to migration administrators. Google encrypts stored objects. Keep the frozen SQLite backup for recovery, and use managed PostgreSQL backups for subsequent changes.
 
-1. Finish the rehearsal and prepare a concrete infrastructure/DNS change plan. Preserve current DNS values, droplet app revisions and service configuration for rollback.
-2. Stop both old application services and all background writers for a bounded maintenance window. Take fresh, integrity-checked snapshots after stopping writers. Keep the old deployment available to restart until new writes are enabled.
-3. Apply final PostgreSQL schema migrations and import these final snapshots. Re-verify counts, relationships, sequences and credentials. The new app roles must own the app-created tables/sequences or receive explicitly scoped grants from the importer; do not leave imported objects accessible only to `doadmin`.
-4. Populate app runtime/registry Secrets. Set each enabled app’s image digest and `postgresMigrationVerified: true` in `kubernetes/values.local.yaml`. Review `helm template` output, then run `kubernetes/deploy.sh` with that values file. Confirm startup/readiness, no SQLite files, and one background scheduler per app.
-5. Issue the custom certificates using a CA-side DNS override or the planned cutover issuance window described in the README. Check both applications over the new Tailscale IP with the correct hostnames and root CA.
-6. Switch Cloudflare's DNS-only records, verify canonical HTTPS and same-origin write protections, then enable application writes and background syncs. Keep the old app services stopped to prevent divergent writers.
-7. Monitor errors, PostgreSQL connections/storage, backups, CA certificate expiry/renewal, Tailscale connectivity and NAT capacity. Verify a subsequent renewal and a gateway restart. Retain the droplet snapshots until a restore has been demonstrated and the new deployment is accepted.
+## Rollback
 
-## Rollback boundary
+Before PostgreSQL accepts new writes, stop new apps/background jobs, restore DNS with `scripts/app-dns.py --switch-to 100.66.233.125`, and restart the frozen droplet services. Once PostgreSQL has accepted writes, roll back the application image while retaining PostgreSQL, or first reconcile/export new data. Switching DNS back to stale SQLite after new writes would lose visibility of those changes. Preserve cert-manager's account/TLS Secrets and Tailscale Service identity.
 
-Before the first accepted write in PostgreSQL, stop the new apps and background jobs, restore old DNS, and restart the old services on their frozen SQLite snapshots. After new writes have been accepted, stop writers and reconcile/export those writes before returning to SQLite, or roll back the application image while retaining PostgreSQL. A DNS-only rollback to the frozen SQLite files would discard visibility of new data.
+## Updating an app
 
-Managed PostgreSQL backups/PITR should be checked in the DigitalOcean account, with independent encrypted logical backups and a documented restore drill. A single DBaaS primary is still a shared failure point for both systems. Terraform state is not a data backup.
+Test, commit, push and build the app, run any new versioned migrations as a separate Job, update its digest, and deploy the production values file. Do not use the initial SQLite import for ordinary deployments. A single replica with `Recreate` prevents duplicate background schedulers. Secret rotations require synchronization and a pod restart for environment-based credentials; Trends' API-key versions are picked up within 60 seconds.

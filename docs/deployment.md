@@ -16,6 +16,7 @@ configuration lives in `kubernetes/` and is installed with Helm and kubectl.
 | API firewall | Enabled; deployment droplet egress `167.172.3.1/32` and cluster NAT `129.212.198.155/32` |
 | PostgreSQL `systems-postgres` | ID `b6634027-f437-49cf-826e-974c84087392`; version 17; one `db-s-1vcpu-2gb` primary |
 | Database access | Private endpoint; trusted source restricted to this Kubernetes cluster |
+| DOCR | `registry.digitalocean.com/freddierice-systems`, Basic tier, `nyc3`; cluster pull integration enabled |
 | Application databases | Separate `health` and `trends` databases and logins on the shared instance |
 
 The control-plane API is public and firewalled. Worker nodes have no public IPs.
@@ -62,51 +63,37 @@ and grants; it must be merged into the existing policy.
 The API proxy passed a TLS-verified request with existing Kubernetes credentials
 that listed both nodes. A request from the deployment droplet through the
 application load balancer reached Traefik and received the intended HTTPS redirect.
-Traefik registered its ACME account with the private CA through its dedicated DNS
-resolver and Tailscale egress proxy, using the configured CA root for verification.
+cert-manager registered its ACME account with the private CA through the dedicated DNS resolver and Tailscale egress proxy, verifying the CA root.
 
-The gateway now runs Traefik `v3.7.12`, deployed as Helm release `systems` revision
-2 on 2026-09-07. It and the two DNS pods are Ready. Traefik runs as UID 1000 with
-all Linux capabilities dropped and a read-only root filesystem. Only CoreDNS
-retains `NET_BIND_SERVICE` because its upstream binary carries that file capability.
-The existing PVC `systems-caddy-data` is reused; Traefik's separate
-`/data/traefik-acme.json` is owned by UID 1000 with mode `0600`. Old Caddy state is
-retained for rollback. The Tailscale Service identity and address are unchanged.
+The gateway runs Traefik `v3.7.12` from official Helm chart `41.5.0`, with cert-manager `v1.21.1` and Gateway API `v1.6.1`. The `systems` Gateway and four HTTPRoutes replace Traefik's file provider. Its HTTPS listeners reference the cert-manager-owned `health-tls` and `trends-tls` Secrets. The namespaced Issuer uses Gateway API HTTP-01. No DNS-edit credential is installed for certificate issuance.
 
-## Validation and remaining cutover
+Traefik runs as non-root UID 65532, with a read-only root filesystem and only `NET_BIND_SERVICE` to listen on the Gateway's standard ports 80/443. It is stateless and has no certificate PVC. The old `systems-caddy-data` PVC remains unmounted for recovery. The Tailscale Service identity and address were preserved.
 
-- Terraform configuration, Helm lint, shell/Python syntax, four mocked Terraform
-  checks, and seven Python/Helm checks passed.
-- The final live Terraform plan reported no changes.
-- DigitalOcean reports the cluster running with isolated workers and the intended
-  API firewall. The database has only the cluster trusted-source rule.
-- Live database grants, private TLS connectivity, and cross-database isolation
-  passed.
-- Traefik's local `/ping` endpoint returned `OK`; live GET/HEAD requests through
-  Tailscale redirected to HTTPS and HTTP POST returned 404 for both app hostnames.
-- Native Traefik checks with an isolated local certificate and test backend passed:
-  GET/HEAD redirects, rejected HTTP writes, TLS preparation responses (503),
-  unknown host rejection, backend routing, and correct HTTPS forwarding despite
-  a spoofed incoming `X-Forwarded-Proto` header.
-- Tailscale load-balancer routing, the authenticated Kubernetes API proxy, and
-  private CA connectivity passed. Application certificate issuance and renewal
-  remain unverified: the app hostnames still resolve to the live droplet, so
-  HTTP-01 validation does not target this gateway. Follow the README's certificate
-  and DNS cutover procedure during migration; Traefik may retry issuance meanwhile.
-- Both application Deployments remain disabled. No SQLite data has been migrated,
-  no application code has been changed, and no application DNS has been switched.
-  The live droplet deployment remains the current service.
+DOKS initially bundled Gateway API v1.2.1. We used its documented external-install policy to upgrade the standard definitions to v1.6.1, required by Traefik. The pinned installer checks existing versions before applying; DOKS-managed Cilium configuration was not changed.
 
-For subsequent platform updates:
+## Application migration — 2026-09-07
 
-```sh
-# After replacing the OAuth credential in Secret Manager:
-python3 kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems
-kubectl --context do-nyc1-systems -n tailscale rollout restart deployment/operator
-# Install/upgrade the Kubernetes configuration:
-bash kubernetes/deploy.sh do-nyc1-systems
-```
+Both apps were migrated from the droplet to DOKS on 2026-09-07. Their final imports committed 45 tables and 978 rows: Health 9 tables / 763 rows, Trends 36 tables / 215 rows. Every table's count and canonical row checksum matched its frozen SQLite snapshot. Health measurements, connected provider tokens/ownership, workouts, and all Trends journal/research/history records were retained. Database sequences were reset after preserving existing IDs.
 
-Complete [the application migration](migration.md) and the root README's DNS and
-certificate cutover sequence before enabling application Deployments or changing
-the existing `health.freddie.xyz` and `trends.freddie.xyz` records.
+The original Health checkout contains the owner's uncommitted Measurements and integration work. That content was preserved as commit `fdcbb2b` in an isolated migration worktree before PostgreSQL changes. The live source checkout and its edits were not modified. Both app migration branches are pushed as `codex/postgres-doks`.
+
+| Application | Source commit | DOCR digest |
+| --- | --- |
+| health | `8ece89719421f79182c16801720f727c8012ee4b` | `sha256:5c56bdd10237fecd1d388e441404c32d70c387568dde5ebdf4ba288780eaea7a` |
+| trends | `0ab11d7f21d90a8f287d553c3628b75cdab7ab8a` | `sha256:9a58c69433b52fbd3b36a56a6786588818bfbf303f90bd9f8a9e90bb9a33117e` |
+
+Both application A records now point to `100.91.90.6`, DNS only. cert-manager obtained both certificates from the existing private CA using HTTP-01. TLS-verified readiness checks passed through the Tailscale load balancer. The original droplet services are stopped and disabled; the source, configuration and SQLite files remain for recovery. Frozen snapshots, count/hash reports, unit files and source revisions are retained under `gs://freddie-systems-migration-186933910776/final-2026-09-07/`, with public access prevention and uniform bucket-level access.
+
+All app configuration credentials are in Google Secret Manager; see [secret storage](secrets.md). Trends' workload identity successfully read and added versions to its two API-key secrets, and was denied access to Health's database secret. Both app images connected to the private PostgreSQL endpoint using verified TLS. The migrated containers have no SQLite fallback, no Google administrative key, and no writeable persistent app filesystem. Health OAuth access/refresh state is stored as app data in PostgreSQL.
+
+Background Health sync and Trends provider workers are enabled through `backgroundJobsEnabled: true`. The current production values, including immutable DOCR digests, are committed in `kubernetes/values.production.yaml`. Terraform still manages only DigitalOcean infrastructure; Helm/kubectl manage all Kubernetes configuration.
+
+## Verification
+
+- Both apps' existing SQLite suites passed; the PostgreSQL runs exercised the same app behavior, excluding legacy SQLite schema/file tests. Health: 41 PostgreSQL tests passed, 1 SQLite-only skipped. Trends: 205 passed and 9 SQLite-only skipped in the full PostgreSQL run; its final signal-refresh ordering failure then passed on both backends. Additional PostgreSQL transaction/constraint tests passed, including the new mandatory-fund constraint. The final SQLite run passed 215 tests with the PostgreSQL-only transaction test skipped.
+- Consistent import rehearsals and the final imports verified all 45 tables. The final imports used the exact deployed image digests and managed database credentials.
+- Both apps' liveness/readiness, main pages, Health Measurements/state/provider routes, Trends funds/trades and provider configuration endpoints returned successful responses.
+- The cluster accepted the rendered resources in a server-side dry run. Terraform validation, Helm lint, four mocked Terraform tests and eight Python/Helm tests passed. The final live Terraform plan reported no changes.
+- Both certificates were renewed through cert-manager after the Gateway API cutover. CertificateRequests completed successfully, temporary solver routes were removed, and Traefik served the newly issued certificates without a pod restart. HTTPS readiness, application pages, provider configuration and cross-origin write rejection passed through the unchanged Tailscale address.
+
+For subsequent updates, use the [rollout runbook](migration.md). The deployment script defaults to the committed production values. The chart/example defaults keep apps disabled for fresh provisioning. Do not point traffic back at frozen SQLite after PostgreSQL has accepted writes; roll back the image while retaining PostgreSQL or reconcile the data first.
