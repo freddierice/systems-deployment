@@ -38,7 +38,8 @@ jobs 185–195 (August 28–September 7) were canceled after three hours with
 `printer is unreachable`. No print jobs remained queued.
 
 The cached router is `homeassistant.taile78e54.ts.net` (`100.64.102.10`), advertising
-only `10.0.0.33/32`. Systems belongs to `impala-hen.ts.net`, a different tailnet.
+only `10.0.0.33/32`. Systems belongs to the `freddie.rice@gmail.com` tailnet
+(`impala-hen.ts.net`), a different tailnet.
 For the chart's printer egress Service to work, an always-on host on the printer
 LAN must advertise and have approval for `10.0.0.33/32` in the systems tailnet.
 Its policy must allow the systems printer proxy to TCP 631. Cross-tailnet device
@@ -62,6 +63,39 @@ The protected initial recovery snapshot is
 It contains source revision `5ad1449013cd3f8053487d61d492fab828182a49`, the original
 runtime files and a database integrity/count record: 122 health rows and one
 workout. Public access prevention and uniform bucket-level access are enforced.
+
+## Staging verification — 2026-09-07
+
+Helm revision 11 installed the suspended CronJob, ServiceAccount and 1 GiB PVC.
+Comparison with the previous rendered release showed no changed or removed
+existing resources. The printer Service remains disabled while its route is
+unavailable. Health, Trends, Traefik and the systems DNS replicas stayed Ready.
+
+The image was built from clean local Time commit
+`8baafa098d90034a7efcd1088cb9e03b9b132e0e`, with digest
+`sha256:73935ba3212ab594c069d6095f56a283079acee4a626f80196a6a8f9fbe610cc`.
+Twelve application tests and 78 deployment tests passed, as did Helm lint and
+server-side validation. The live container verified UID 1000, read-only root
+filesystem and the absence of runtime data/credentials in `/app`. All five
+seeded database/token files matched their source SHA-256 checksums. SQLite
+integrity and the 122/1 row counts remained valid after rendering.
+
+`preflight --skip-printer` and `generate-only` succeeded in a temporary pod using
+the CronJob's image, environment, volumes and security settings. The generated
+10,527-byte PDF has two landscape Letter pages (792 × 612 points); its decoded
+page content is identical to the source's September 7 report. Calendar/Todoist
+fetches completed without new warnings. A read-only Drive metadata request
+authenticated successfully and confirmed edit capability on the existing
+`health.db` backup. No health sync, backup upload, or physical print was triggered
+by these checks. The temporary pod and builder were removed after verification.
+
+The protected recovery prefix also holds `staged-data.tar`,
+`render-verification.json`, `image-metadata.json` and `time-cluster.bundle`.
+The bundle preserves the complete tested Time commit. Publishing that commit
+to `freddierice/time` is pending: GitHub rejected the source host's read-only
+deploy key. A dedicated `codex-time-deploy` public key has been supplied for
+repository write access. Systems configuration is already published on its
+repository's `main` branch.
 
 ## Cutover and recovery
 
