@@ -2,7 +2,8 @@
 """Plan GitHub OIDC identity setup; use --apply to provision it without secret values.
 
 Requires authenticated gcloud only. Existing matching resources and IAM bindings
-are retained. Conflicting trust configuration is never overwritten. Repository
+are retained. The exact prior Health/Trends trust can add the Daily Report caller;
+all other conflicting trust configuration is rejected. Repository
 names are trusted within an immutable GitHub owner ID: the same owner recreating
 one of these repository names retains its trust; a different owner cannot.
 """
@@ -47,6 +48,12 @@ TARGETS = {
         "identity": "freddierice/trends",
         "secrets": ("systems-actions-digitalocean",),
     },
+    "daily-report": {
+        "repository": "freddierice/time",
+        "workflow": "release.yml",
+        "identity": "freddierice/time",
+        "secrets": ("systems-actions-digitalocean",),
+    },
     "deploy": {
         "identity": "deploy",
         "secrets": ("systems-actions-digitalocean-deploy", "systems-actions-git-key"),
@@ -62,6 +69,20 @@ MAPPING = {"google.subject": "assertion.sub"} | {
 MAPPING["attribute.identity"] = (
     f"('job_workflow_ref' in assertion && assertion.job_workflow_ref == '{DEPLOY_WORKFLOW}') "
     "? 'deploy' : assertion.repository"
+)
+# Freeze the deployed condition verbatim: do not derive it by removing a target
+# from the current plan, which could silently bless future predicate changes.
+PRE_DAILY_REPORT_CONDITION = (
+    "assertion.repository_owner_id == '2191702' && "
+    "assertion.ref == 'refs/heads/main' && "
+    "assertion.event_name == 'push' && "
+    "assertion.runner_environment == 'github-hosted' && "
+    "((assertion.repository == 'freddierice/health' && "
+    "assertion.workflow_ref == 'freddierice/health/.github/workflows/release.yml@refs/heads/main') || "
+    "(assertion.repository == 'freddierice/trends' && "
+    "assertion.workflow_ref == 'freddierice/trends/.github/workflows/release.yml@refs/heads/main')) && "
+    "(!('job_workflow_ref' in assertion) || assertion.job_workflow_ref == assertion.workflow_ref || "
+    "assertion.job_workflow_ref == 'freddierice/systems-deployment/.github/workflows/deploy.yml@refs/heads/main')"
 )
 
 
@@ -156,6 +177,7 @@ def resource_plan():
         "provider": PROVIDER_RESOURCE,
         "attribute_mapping": MAPPING,
         "attribute_condition": condition,
+        "recognized_previous_attribute_condition": PRE_DAILY_REPORT_CONDITION,
         "service_accounts": accounts,
         "empty_secrets_if_absent": sorted({secret for target in TARGETS.values() for secret in target["secrets"]}),
         "lock_bucket": {
@@ -203,9 +225,22 @@ def ensure_provider(plan):
         oidc.get("issuerUri", "").rstrip("/") != ISSUER
         or oidc.get("allowedAudiences", [])
         or existing.get("attributeMapping") != MAPPING
-        or existing.get("attributeCondition") != plan["attribute_condition"]
     ):
         raise ConfigurationError("Existing GitHub provider trust differs from this plan; refusing to overwrite it.")
+    condition = existing.get("attributeCondition")
+    if condition == plan["attribute_condition"]:
+        return
+    if (
+        condition != PRE_DAILY_REPORT_CONDITION
+        or plan["attribute_condition"] != resource_plan()["attribute_condition"]
+    ):
+        raise ConfigurationError("Existing GitHub provider trust differs from this plan; refusing to overwrite it.")
+    # The only supported trust migration adds freddierice/time under the same
+    # owner/main/push/hosted/exact-workflow predicates and identity separation.
+    command(
+        "gcloud", "iam", "workload-identity-pools", "providers", "update-oidc", PROVIDER,
+        *flags, "--attribute-condition=" + plan["attribute_condition"], "--quiet",
+    )
 
 
 def ensure_binding(prefix, resource, member, role):

@@ -97,6 +97,31 @@ deploy key. A dedicated `codex-time-deploy` public key has been supplied for
 repository write access. Systems configuration is already published on its
 repository's `main` branch.
 
+## GitHub Actions release setup — 2026-09-07
+
+Time commit `c91a99c67d0168018470e43fa139e7c8590d2522` adds its release workflow
+and isolated image check. Pull requests run unit tests, compilation and an
+offline container check. A main push publishes a DOCR image and calls the
+systems reusable deployment workflow with `app: daily-report`. Only its image
+and source revision are updated; releases do not run a report or change the
+CronJob's schedule/suspension. See [push-to-deploy](github-actions.md).
+
+The live Google provider now accepts the exact Time main-push release workflow,
+and `systems-ci-daily-report` has access only to the existing registry publishing
+credential. Verification found no project-role, runtime-secret or deployment-
+secret grants for that publisher. Existing Health/Trends trust was preserved.
+The registry publisher credential remains denied Kubernetes account access.
+
+All 104 application/deployment tests and actionlint checks passed. A candidate
+image built from that commit at
+`sha256:bbefcf7a163fbff9bc376bd91071e303642d59151e3aa32c2ab1306875b1293e`
+passed the reusable deployer's real cluster smoke check with temporary storage,
+no runtime credentials, and denied network access. The CronJob spec was identical
+before and after the check; the smoke pod and its policy were removed. This
+candidate was not assigned to the scheduled CronJob. The first GitHub-hosted
+release run remains pending publication of the Time commits with a writable
+repository key.
+
 ## Cutover and recovery
 
 1. Restore the printer route and verify the container's `preflight` command from

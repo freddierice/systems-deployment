@@ -39,7 +39,7 @@ def caller(app="health", **overrides):
 class TrustTests(unittest.TestCase):
     def test_only_expected_hosted_main_push_callers_are_accepted(self):
         condition = identity.resource_plan()["attribute_condition"]
-        for app in ("health", "trends"):
+        for app in ("health", "trends", "time"):
             claims = caller(app)
             self.assertTrue(evaluate(condition, claims))
             self.assertTrue(evaluate(condition, claims | {"job_workflow_ref": identity.DEPLOY_WORKFLOW}))
@@ -57,7 +57,7 @@ class TrustTests(unittest.TestCase):
 
     def test_only_exact_reusable_workflow_gets_deploy_identity(self):
         condition, mapping = identity.resource_plan()["attribute_condition"], identity.MAPPING["attribute.identity"]
-        for app in ("health", "trends"):
+        for app in ("health", "trends", "time"):
             publisher = caller(app)
             self.assertEqual(evaluate(mapping, publisher), f"freddierice/{app}")
             own_job = publisher | {"job_workflow_ref": publisher["workflow_ref"]}
@@ -77,10 +77,14 @@ class TrustTests(unittest.TestCase):
     def test_secret_and_bucket_access_are_separate(self):
         plan = identity.resource_plan()
         accounts = {account["name"]: account for account in plan["service_accounts"]}
-        for app in ("health", "trends"):
-            account = accounts[f"systems-ci-{app}"]
+        for name, app in (("health", "health"), ("trends", "trends"), ("daily-report", "time")):
+            account = accounts[f"systems-ci-{name}"]
             self.assertEqual(account["secrets"], ["systems-actions-digitalocean"])
+            self.assertEqual(account["identity"], f"freddierice/{app}")
             self.assertTrue(account["principal"].endswith(f"/attribute.identity/freddierice/{app}"))
+        self.assertEqual(set(plan["empty_secrets_if_absent"]), {
+            "systems-actions-digitalocean", "systems-actions-digitalocean-deploy", "systems-actions-git-key",
+        })
         deployment = accounts["systems-ci-deploy"]
         self.assertEqual(set(deployment["secrets"]), {"systems-actions-digitalocean-deploy", "systems-actions-git-key"})
         self.assertTrue(deployment["principal"].endswith("/attribute.identity/deploy"))
@@ -93,6 +97,14 @@ class TrustTests(unittest.TestCase):
         condition = identity.resource_plan()["attribute_condition"]
         self.assertTrue(evaluate(condition, caller(repository_id="new-id-under-same-owner")))
         self.assertFalse(evaluate(condition, caller(repository_owner_id="new-owner-id")))
+
+    def test_recognized_previous_trust_accepts_existing_callers_but_not_daily_report(self):
+        previous = identity.resource_plan()["recognized_previous_attribute_condition"]
+        for app in ("health", "trends"):
+            self.assertTrue(evaluate(previous, caller(app)))
+            self.assertTrue(evaluate(previous, caller(app, job_workflow_ref=identity.DEPLOY_WORKFLOW)))
+        self.assertFalse(evaluate(previous, caller("time")))
+        self.assertFalse(evaluate(previous, caller("time", job_workflow_ref=identity.DEPLOY_WORKFLOW)))
 
 
 class ProvisioningTests(unittest.TestCase):
@@ -168,10 +180,68 @@ class ProvisioningTests(unittest.TestCase):
             identity.ensure_binding(("gcloud", "secrets"), "example", "serviceAccount:example", "roles/secretmanager.secretAccessor")
         mutate.assert_not_called()
 
+    def test_exact_previous_condition_is_upgraded_once_then_idempotent(self):
+        plan = identity.resource_plan()
+        existing = {"name": identity.PROVIDER_RESOURCE, "oidc": {"issuerUri": identity.ISSUER},
+                    "attributeMapping": identity.MAPPING,
+                    "attributeCondition": identity.PRE_DAILY_REPORT_CONDITION}
+
+        def apply_update(*arguments):
+            self.assertEqual(arguments[:6], (
+                "gcloud", "iam", "workload-identity-pools", "providers", "update-oidc", identity.PROVIDER,
+            ))
+            self.assertIn(f"--workload-identity-pool={identity.POOL}", arguments)
+            self.assertIn(f"--project={identity.PROJECT}", arguments)
+            self.assertFalse(any(arg.startswith(("--issuer-uri", "--attribute-mapping", "--allowed-audiences"))
+                                 for arg in arguments))
+            existing["attributeCondition"] = next(
+                arg.split("=", 1)[1] for arg in arguments if arg.startswith("--attribute-condition=")
+            )
+
+        with patch.object(identity, "document", side_effect=[{"state": "ACTIVE"}, [existing]] * 2), \
+             patch.object(identity, "command", side_effect=apply_update) as mutate:
+            identity.ensure_provider(plan)
+            self.assertEqual(existing["attributeCondition"], plan["attribute_condition"])
+            identity.ensure_provider(plan)
+        mutate.assert_called_once()
+
+    def test_prior_condition_does_not_allow_other_trust_changes(self):
+        plan = identity.resource_plan()
+        existing = {"name": identity.PROVIDER_RESOURCE, "oidc": {"issuerUri": identity.ISSUER},
+                    "attributeMapping": identity.MAPPING,
+                    "attributeCondition": identity.PRE_DAILY_REPORT_CONDITION}
+        variants = [
+            existing | {"oidc": {"issuerUri": "https://different-issuer.example"}},
+            existing | {"oidc": {"issuerUri": identity.ISSUER, "allowedAudiences": ["unexpected"]}},
+            existing | {"attributeMapping": identity.MAPPING | {"attribute.identity": "'deploy'"}},
+            existing | {"disabled": True},
+            existing | {"state": "DELETED"},
+        ]
+        for previous in ("true", identity.PRE_DAILY_REPORT_CONDITION + " || true",
+                         identity.PRE_DAILY_REPORT_CONDITION.replace("2191702", "9999"),
+                         identity.PRE_DAILY_REPORT_CONDITION.replace("github-hosted", "self-hosted"),
+                         identity.PRE_DAILY_REPORT_CONDITION.replace("refs/heads/main", "refs/heads/feature")):
+            variants.append(existing | {"attributeCondition": previous})
+        for provider in variants:
+            with self.subTest(provider=provider), \
+                 patch.object(identity, "document", side_effect=[{"state": "ACTIVE"}, [provider]]), \
+                 patch.object(identity, "command") as mutate, self.assertRaises(identity.ConfigurationError):
+                identity.ensure_provider(plan)
+            mutate.assert_not_called()
+        with patch.object(identity, "document", side_effect=[{"state": "ACTIVE"}, [existing]]), \
+             patch.object(identity, "command") as mutate, self.assertRaises(identity.ConfigurationError):
+            identity.ensure_provider(plan | {"attribute_condition": "true"})
+        mutate.assert_not_called()
+
     def test_apply_only_uses_scoped_google_grants_not_secret_values_or_keys(self):
         with patch.object(identity, "ensure_provider"), patch.object(identity, "ensure_lock_bucket"), patch.object(identity, "document", return_value=None), patch.object(identity, "ensure_binding") as bind, patch.object(identity, "command") as commands:
             identity.apply_plan(identity.resource_plan())
-        self.assertEqual(bind.call_count, 8)
+        self.assertEqual(bind.call_count, 10)
+        publisher = f"serviceAccount:systems-ci-daily-report@{identity.PROJECT}.iam.gserviceaccount.com"
+        publisher_grants = [call.args for call in bind.call_args_list if call.args[2] == publisher]
+        self.assertEqual(publisher_grants, [
+            (("gcloud", "secrets"), "systems-actions-digitalocean", publisher, "roles/secretmanager.secretAccessor"),
+        ])
         for call in bind.call_args_list:
             prefix, resource, member, role = call.args
             if role == "roles/iam.workloadIdentityUser":

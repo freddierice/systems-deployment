@@ -15,6 +15,7 @@ import ssl
 import subprocess
 import tempfile
 import time
+import uuid
 
 import yaml
 
@@ -26,6 +27,7 @@ REGISTRY = "freddierice-systems"
 REPOSITORIES = {
     "health": "https://github.com/freddierice/health.git",
     "trends": "https://github.com/freddierice/trends.git",
+    "daily-report": "https://github.com/freddierice/time.git",
 }
 HELM = ["helm", "--kube-context", CONTEXT, "--namespace", "systems"]
 
@@ -64,7 +66,7 @@ def output(*arguments, **kwargs):
 
 def validate_inputs(app, source_sha, digest, run_id):
     if app not in REPOSITORIES:
-        raise ReleaseError("App must be health or trends.")
+        raise ReleaseError("App must be health, trends, or daily-report.")
     for name, value, pattern in (
         ("source SHA", source_sha, r"[0-9a-f]{40}"),
         ("image digest", digest, r"sha256:[0-9a-f]{64}"),
@@ -96,7 +98,7 @@ def verify_schema(app, old_sha, new_sha, checkout, schema_verified=False):
         raise ReleaseError("Production sourceRevision is missing; establish a verified baseline first.")
     if schema_verified:
         return  # Explicit operator confirmation; automatic workflows never set this.
-    paths = [f"{app}/migrate.py", f"{app}/migrations"]
+    paths = ["db.py"] if app == "daily-report" else [f"{app}/migrate.py", f"{app}/migrations"]
     old_tree = output("git", "ls-tree", "-r", old_sha, "--", *paths, cwd=checkout, source_auth=True)
     new_tree = output("git", "ls-tree", "-r", new_sha, "--", *paths, cwd=checkout, source_auth=True)
     if not old_tree or old_tree != new_tree:
@@ -119,10 +121,11 @@ def image_only(previous, candidate, app, old_image, new_image):
     """Reject unapplied chart changes, missing resources, and other-app updates."""
     before, after = resources(previous), resources(candidate)
     expected = copy.deepcopy(before)
-    key = ("apps/v1", "Deployment", "systems", app)
+    key = ("batch/v1", "CronJob", "systems", app) if app == "daily-report" else ("apps/v1", "Deployment", "systems", app)
     if key not in expected:
         raise ReleaseError("The selected app is not part of the existing Helm release.")
-    containers = expected[key]["spec"]["template"]["spec"]["containers"]
+    workload = expected[key]["spec"]["jobTemplate"] if app == "daily-report" else expected[key]
+    containers = workload["spec"]["template"]["spec"]["containers"]
     target = next((item for item in containers if item["name"] == app), None)
     if target is None or target["image"] not in (old_image, new_image):
         raise ReleaseError("The deployed image differs from the recorded production release.")
@@ -145,25 +148,101 @@ def verify_replicas(manifest):
 def update_values(original, app, image, source_sha):
     """Preserve comments/formatting and touch only this application's two lines."""
     parsed = yaml.safe_load(original)
-    previous = parsed["apps"][app]
+    previous = parsed["dailyReport"] if app == "daily-report" else parsed["apps"][app]
     expected = copy.deepcopy(parsed)
-    expected["apps"][app].update(image=image, sourceRevision=source_sha)
+    selected = expected["dailyReport"] if app == "daily-report" else expected["apps"][app]
+    selected.update(image=image, sourceRevision=source_sha)
+    section = "dailyReport:" if app == "daily-report" else f"{app}:"
+    depth = 0 if app == "daily-report" else 2
     lines, within_app, changed = original.splitlines(keepends=True), False, set()
     for index, line in enumerate(lines):
-        if re.match(r"^  [a-zA-Z][\w-]*:\s*$", line):
-            within_app = line.strip() == f"{app}:"
-        elif line.strip() and not line.startswith(" ") and not line.startswith("#"):
+        if re.match(rf"^{' ' * depth}[a-zA-Z][\w-]*:\s*$", line):
+            within_app = line.strip() == section
+        elif line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) <= depth:
             within_app = False
         if within_app:
             for key, value in (("image", image), ("sourceRevision", source_sha)):
-                if re.match(rf"^    {key}:\s", line):
+                if re.match(rf"^{' ' * (depth + 2)}{key}:\s", line):
                     scalar = json.dumps(value) if key == "sourceRevision" else value
-                    lines[index] = f"    {key}: {scalar}\n"
+                    lines[index] = f"{' ' * (depth + 2)}{key}: {scalar}\n"
                     changed.add(key)
     updated = "".join(lines)
     if changed != {"image", "sourceRevision"} or yaml.safe_load(updated) != expected:
         raise ReleaseError("Production values need explicit image/sourceRevision lines for this app.")
     return updated, previous
+
+
+def verify_report_schedule(manifest):
+    """Do not undo an operator's live suspension or schedule change during release."""
+    expected = resources(manifest)["batch/v1", "CronJob", "systems", "daily-report"]["spec"]
+    actual = json.loads(output("kubectl", "--context", CONTEXT, "-n", "systems", "get",
+                               "cronjob", "daily-report", "-o", "json"))["spec"]
+    fields = ("schedule", "timeZone", "suspend", "concurrencyPolicy", "startingDeadlineSeconds",
+              "successfulJobsHistoryLimit", "failedJobsHistoryLimit")
+    if any(actual.get(field) != expected.get(field) for field in fields):
+        raise ReleaseError("Live daily-report scheduling differs from the chart; reconcile it before release.")
+
+
+def report_smoke(manifest):
+    """Start the candidate image with synthetic data and no production access."""
+    cron = resources(manifest)["batch/v1", "CronJob", "systems", "daily-report"]
+    pod_spec = copy.deepcopy(cron["spec"]["jobTemplate"]["spec"]["template"]["spec"])
+    container = next(item for item in pod_spec["containers"] if item["name"] == "daily-report")
+    container["command"] = ["python", "-u", "deployment_smoke.py"]
+    container["args"] = []
+    container.pop("envFrom", None)
+    container["env"] = [item for item in container["env"] if item["name"] in (
+        "DATA_DIR", "TZ", "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED")]
+    container["volumeMounts"] = [{"name": "data", "mountPath": "/data"}, {"name": "tmp", "mountPath": "/tmp"}]
+    pod_spec["containers"] = [container]
+    pod_spec.pop("initContainers", None)
+    pod_spec.pop("ephemeralContainers", None)
+    pod_spec["volumes"] = [{"name": "data", "emptyDir": {}}, {"name": "tmp", "emptyDir": {}}]
+    pod_spec["activeDeadlineSeconds"] = 180
+    pod_spec["restartPolicy"] = "Never"
+    name = "daily-report-smoke-" + uuid.uuid4().hex[:12]
+    labels = {"systems.freddie.xyz/release-smoke": name}
+    pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "namespace": "systems", "labels": labels},
+           "spec": pod_spec}
+    # The smoke entry point has no integration calls. Enforce that boundary too,
+    # including against accidental network activity during module imports.
+    policy = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+              "metadata": {"name": name, "namespace": "systems"},
+              "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress", "Egress"],
+                       "ingress": [], "egress": []}}
+    with tempfile.TemporaryDirectory(prefix="systems-report-smoke-") as temporary:
+        path = Path(temporary) / "smoke.yaml"
+        path.write_text(yaml.safe_dump_all([policy, pod]))
+        try:
+            run("kubectl", "--context", CONTEXT, "-n", "systems", "apply", "--filename", str(path))
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline:
+                status = json.loads(output("kubectl", "--context", CONTEXT, "-n", "systems", "get",
+                                           "pod", name, "-o", "json", timeout=30))["status"]
+                if status.get("phase") == "Succeeded":
+                    return
+                if status.get("phase") == "Failed":
+                    raise ReleaseError("Daily report image failed its isolated container smoke check.")
+                time.sleep(2)
+            raise ReleaseError("Daily report container smoke check did not finish within 240 seconds.")
+        except Exception:
+            # This pod has only synthetic data and no integration credentials.
+            # Preserve useful failure diagnostics before removing it.
+            try:
+                logs = run("kubectl", "--context", CONTEXT, "-n", "systems", "logs", name,
+                           "--container", "daily-report", "--tail=40", check=False, timeout=30)
+                if logs.stdout:
+                    print("Daily report smoke output:\n" + logs.stdout, flush=True)
+            except (ReleaseError, subprocess.SubprocessError, OSError):
+                pass
+            raise
+        finally:
+            # Keep its deny policy in place until the process is gone. If pod
+            # cleanup fails, retain the policy and fail the release for cleanup.
+            run("kubectl", "--context", CONTEXT, "-n", "systems", "delete", "pod", name,
+                "--ignore-not-found", "--wait=true", "--timeout=30s", timeout=45)
+            run("kubectl", "--context", CONTEXT, "-n", "systems", "delete", "networkpolicy", name,
+                "--ignore-not-found", "--wait=true", "--timeout=30s", timeout=45)
 
 
 @contextmanager
@@ -283,18 +362,29 @@ def deploy(args):
         unchanged = image_only(output(*HELM, "get", "manifest", "systems"), candidate,
                                args.app, previous["image"], image)
         verify_replicas(candidate)
+        if args.app == "daily-report":
+            verify_report_schedule(candidate)
         if args.dry_run:
             print(f"Validated {args.app} release; dry run made no cluster or production-state changes.")
             return
         if current_main(args.app) != args.source_sha:
             print(f"Skipped stale {args.app} release: main advanced during validation.")
             return
+        if args.app == "daily-report":
+            # Validate before changing the CronJob; current Jobs continue using
+            # their existing image and no report/print invocation is created.
+            report_smoke(candidate)
+            verify_report_schedule(candidate)
+            if current_main(args.app) != args.source_sha:
+                print("Skipped stale daily-report release: main advanced during the smoke check.")
+                return
         if not unchanged:
             print(f"Deploying {args.app} {args.source_sha[:12]} at {args.image_digest}.", flush=True)
             run(*HELM, "upgrade", "--install", "systems", str(ROOT / CHART), "--values", str(candidate_values),
                 "--atomic", "--wait", "--timeout", "10m", timeout=1320)
         try:
-            smoke(args.app)
+            if args.app != "daily-report":
+                smoke(args.app)
         except ReleaseError:
             if not unchanged:
                 run(*HELM, "rollback", "systems", str(release["version"]), "--wait", "--timeout", "10m", timeout=660)

@@ -1,6 +1,6 @@
 # Push-to-deploy
 
-A push to `main` in Health or Trends runs its checks, builds the tested commit,
+A push to `main` in Health, Trends, or the daily report (`freddierice/time`) runs its checks, builds the tested commit,
 pushes an immutable DOCR image, and calls this repository's reusable deployment
 workflow. Every job runs on GitHub-hosted Ubuntu. The app's Actions run reports
 both the build and production deployment result. There is no approval click.
@@ -10,14 +10,22 @@ superseded source commits, and updates only the selected app's image. Successful
 image digests and source revisions are committed to
 `kubernetes/values.production.yaml` in this repository.
 
+The daily report's Actions release updates the `dailyReport` image and source
+revision. Its 5:30 a.m. Central schedule runs in Kubernetes. Releasing an image
+does not start a print job or change whether the CronJob is suspended. Before
+changing the scheduled image, a temporary pod checks the candidate with synthetic
+data, the production container security settings, and denied network access.
+It has no production data, provider credentials, printer endpoint, or Kubernetes
+API token. A failed check leaves the scheduled image unchanged.
+
 ## Identity and credentials
 
 GitHub OIDC authenticates to Google Workload Identity Federation. No personal
 GitHub login, personal access token, repository variables, GitHub Actions secrets,
 or Google service-account keys are required.
 
-Trust is restricted to the immutable GitHub owner ID, the two app repository
-names, `main` pushes, the exact caller workflow, and GitHub-hosted runners.
+Trust is restricted to the immutable GitHub owner ID, the three source repository
+names (`health`, `trends`, and `time`), `main` pushes, the exact caller workflow, and GitHub-hosted runners.
 The reusable deployment job is identified by its exact `job_workflow_ref` claim
 and receives a separate Google identity. App build identities can read only the
 registry publisher secret. PR checks receive no cloud credentials. Recreating a
@@ -25,7 +33,7 @@ repository under the same trusted owner/name retains its trust.
 
 | Google secret | Consumers | Purpose |
 | --- | --- | --- |
-| `systems-actions-digitalocean` | Health and Trends release jobs | Registry-only publishing credential; each build generates a 30-minute registry login |
+| `systems-actions-digitalocean` | Health, Trends, and daily report release jobs | Registry-only publishing credential; each build generates a 30-minute registry login |
 | `systems-actions-digitalocean-deploy` | Shared deployment job | Read registry metadata, temporarily update the DOKS API firewall, and obtain expiring Kubernetes credentials |
 | `systems-actions-git-key` | Shared deployment job | Existing SSH write deploy key, restricted to this repository, to record successful releases |
 
@@ -59,7 +67,7 @@ below. DigitalOcean firewall entries have no automatic expiry. Do not run Terraf
 or edit the API firewall concurrently with a release; DigitalOcean does not expose
 conditional updates for that address list.
 
-GitHub concurrency groups are repository-scoped, so the two apps share an atomic
+GitHub concurrency groups are repository-scoped, so all three workloads share an atomic
 lock in the private bucket `gs://freddie-systems-actions-186933910776`. Only the
 Google deployment service account has object access. A job waits up to 20 minutes
 for the lock, then fails if production is still busy. The lock expires after two
@@ -78,16 +86,24 @@ python3 scripts/configure-actions-identity.py --apply
 python3 scripts/configure-actions-secrets.py --apply
 ```
 
-The identity script creates the dedicated `systems-actions` pool/provider, three
+The identity script creates the dedicated `systems-actions` pool/provider, four
 service accounts, empty secrets when absent, scoped IAM bindings, and the private
 lock bucket. It reuses matching resources and refuses conflicting trust. The
 secret script sends credential values through subprocess input and prints no
 credentials. `--git-key PATH` selects an existing deployment repository write key
 if it is not at the administration host's default path.
 
+Adding the daily report requires rerunning `configure-actions-identity.py --apply`.
+It accepts the exact previous Health/Trends provider condition and adds only the
+`freddierice/time/.github/workflows/release.yml@refs/heads/main` caller. Unknown
+issuer, audience, mapping, or trust-condition differences still stop setup.
+The `systems-ci-daily-report` publisher can read only the existing registry
+publishing credential; it receives no report runtime secrets or deployment
+credentials. No credential rotation or new Actions secrets are needed.
+
 Publish this repository's reusable workflow and production revision baselines on
-`main` before publishing the two app workflows on their `main` branches. Those
-app pushes are the first end-to-end release test. Confirm both app Actions runs,
+`main` before publishing the source workflows on their `main` branches. Those
+source pushes are the first end-to-end release test. Confirm their Actions runs,
 recorded production digests, healthy applications, and firewall/lock cleanup.
 Ordinary future pushes need no additional setup.
 
@@ -97,7 +113,9 @@ Ordinary future pushes need no additional setup.
   files stay outside the Docker build context and deployment Git checkout.
 - Deployment requires the current app `main` SHA and its matching DOCR tag/digest.
   An older commit is skipped. Repeating a deployment is safe.
-- Migration runner/SQL changes stop automatic deployment. Run and verify the
+- Migration runner/SQL changes stop automatic deployment. The daily report's
+  SQLite schema lives in `db.py`; changes to that file also stop automatic
+  deployment. Run and verify the
   migration separately using the [migration runbook](migration.md), then invoke
   `scripts/deploy-app.py` manually with the release arguments and
   `--schema-verified`. That operator-only flag bypasses the migration-file gate;
@@ -108,6 +126,10 @@ Ordinary future pushes need no additional setup.
   app job never calls `kubernetes/deploy.sh` or upgrades platform controllers.
 - Apps retain one replica and `Recreate` to avoid duplicate background workers.
   Brief release interruptions remain expected.
+- Daily report releases preserve the CronJob schedule and suspension state,
+  including rejecting live scheduling drift before making an update. Existing
+  report Jobs keep their original image and are not restarted or canceled by a
+  release. Its smoke pod is deleted on success or failure.
 - Helm uses `--atomic --wait`; failed gateway smoke checks roll back to the prior
   Helm revision. A successful rollout followed by a Git push failure is reported
   as failed bookkeeping. Rerun the failed app job after fixing Git access; the
