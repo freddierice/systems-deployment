@@ -2,7 +2,7 @@
 
 The report source is `freddierice/time`. The original installation was
 `daily@137.184.18.81:/home/daily/time`, scheduled at `30 5 * * *` in
-`America/Chicago`. It reads measurements and completed workouts from Health,
+`America/Chicago`. It reads measurements and exercise records from Health,
 uploads `health.db` to Google Drive, renders the planner with Todoist and Google
 Calendar, and prints Letter paper with `sides=two-sided-long-edge`.
 
@@ -34,7 +34,7 @@ PVC, so replacing a Secret cannot revert a rotated refresh token.
 
 The CronJob uses `HEALTH_API_URL=http://health.systems.svc.cluster.local:8000` and
 `HEALTH_API_HOST=health.freddie.xyz` to read Health's measurement history and
-completed workouts. The client sends the canonical Host and
+selected activity source. The client sends the canonical Host and
 `X-Forwarded-Proto: https` headers over the
 trusted internal service route, as the existing Health probes do. The
 `daily-report-to-health` NetworkPolicy permits only report pods in the same
@@ -50,8 +50,7 @@ requires a reachable route and trust for the private CA.
 Health provides weight history and the activity source selected in its catalog:
 Fitbit, manually recorded activity, or locally completed workouts. Time uses the
 selected source without mixing activity from the others. Health has no HRV,
-resting heart rate or sleep measurements to export, so those report values are
-missing until Health supports them. Time no longer syncs Strong directly.
+resting heart rate or sleep measurements to export, so the report omits those fields. Time no longer syncs Strong directly.
 Provider reauthorization, freshness and source corrections are managed in Health.
 Legacy provider rows remain archived in the local database, but reports only
 read the Health cache and never fall back to direct-provider history.
@@ -250,3 +249,42 @@ The report continues to use its live cluster PVC, Secrets, print records and
 active schedule, with source code in the published repositories. Routine Google
 Drive uploads of `health.db` are part of the active report workflow and were
 outside this migration-archive deletion.
+
+
+## Health-only report release — 2026-09-07
+
+Time commit `9fe886cb042904e72837442bf3d0798d56dcedaa` replaces all direct health
+provider inputs with Health. The PDF shows weight and exercise record counts;
+its separate Health cache never reads archived Whoop, Withings, or Strong rows.
+Calendar and Todoist remain report inputs, and Google Drive remains a backup
+output. The 37 Time tests and 94 deployment tests passed. The
+[Actions build](https://github.com/freddierice/time/actions/runs/34169442283)
+published the tested image after its isolated container checks:
+
+```text
+registry.digitalocean.com/freddierice-systems/daily-report@sha256:5b7a2f166e3ad70a47c792b5b701cf17b18229544b78a24521ebd5f338192a08
+```
+
+Systems commit `41f135a` installed the Health route and environment at Helm
+revision 15. The additive SQLite migration was then executed from the exact
+committed source under the report data lock. A consistent pre-migration backup
+is retained on the report PVC at `/data/health.before-health-source-9fe886c.db`;
+verification metadata is at `/data/health-source-migration-9fe886c.json`. Legacy
+row/schema hashes, OAuth files, production PDF, and print records were
+preserved, and SQLite integrity passed. A successful Health sync populated only
+the new cache tables. The reviewed migration allowed the existing deployment
+helper to run with `--schema-verified`; all its source, digest, chart, scheduling,
+and isolated-image checks remained active.
+
+Systems release commit `c09c5b9` records the deployed image at Helm revision 16.
+The shared production lock was released after deployment. The CronJob remains
+active at `30 5 * * *` in `America/Chicago`. Production preflight passed, and the
+new image generated a 10,198-byte PDF with two landscape Letter pages in a
+temporary path. Calendar and Todoist fetched without warnings. The production
+PDF and print markers remained unchanged; verification did not print or upload
+anything, and all temporary pods were removed.
+
+Health currently has no weight or exercise records within the latest 30-day
+window: its newest weight is dated July 20 and selected exercise record July 8.
+The empty report values reflect that Health history; legacy provider data is
+not substituted. Provider freshness is managed in Health.
