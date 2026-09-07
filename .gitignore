@@ -18,6 +18,7 @@ override.tf.json
 rendered/
 __pycache__/
 .venv/
+*.local.yaml
 *.pyc
 *.sqlite3*
 *.pem

@@ -1,18 +1,29 @@
-mock_provider "digitalocean" {}
+mock_provider "digitalocean" {
+  override_during = plan
+}
+
+override_data {
+  target          = data.digitalocean_vpc_nat_gateway.systems
+  override_during = plan
+  values = {
+    egresses = [{ public_gateways = [{ ipv4 = "198.51.100.10" }] }]
+  }
+}
 
 variables {
   admin_cidrs = ["203.0.113.10/32"]
 }
 
 run "private_cluster_and_shared_database" {
-  command = plan
+  # Exercise the allocated NAT address after a mocked creation/read cycle.
+  command = apply
   assert {
     condition     = digitalocean_kubernetes_cluster.systems.name == "systems" && digitalocean_kubernetes_cluster.systems.isolated_workers
     error_message = "systems must use isolated workers."
   }
   assert {
-    condition     = digitalocean_kubernetes_cluster.systems.control_plane_firewall[0].enabled && length(digitalocean_kubernetes_cluster.systems.control_plane_firewall[0].allowed_addresses) == 1
-    error_message = "The API server needs a restrictive control-plane firewall."
+    condition     = digitalocean_kubernetes_cluster.systems.control_plane_firewall[0].enabled && toset(digitalocean_kubernetes_cluster.systems.control_plane_firewall[0].allowed_addresses) == toset(["203.0.113.10/32", "198.51.100.10/32"])
+    error_message = "The API server must allow only administrator CIDRs and the cluster NAT egress."
   }
   assert {
     condition     = one(digitalocean_vpc_nat_gateway.systems.vpcs).default_gateway

@@ -1,0 +1,12 @@
+operatorConfig:
+  hostname: systems-operator
+  defaultTags: [tag:systems-operator]
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 256Mi}
+proxyConfig:
+  defaultTags: tag:systems
+apiServerProxyConfig:
+  mode: noauth
+
+# Credentials come from tailscale/operator-oauth, installed separately.

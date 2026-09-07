@@ -20,4 +20,4 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
       - run: make init check
-      - run: git diff --exit-code -- infra/.terraform.lock.hcl platform/.terraform.lock.hcl
+      - run: git diff --exit-code -- infra/.terraform.lock.hcl

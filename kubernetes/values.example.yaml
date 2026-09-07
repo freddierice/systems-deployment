@@ -1,0 +1,19 @@
+# Copy to kubernetes/values.local.yaml. This file is used directly by Helm.
+# Keep apps disabled until the app code and SQLite data are migrated.
+postgresMigrationVerified: false
+imagePullSecrets: []
+apps:
+  health:
+    enabled: false
+    image: ""
+  trends:
+    enabled: false
+    image: ""
+
+# After migration, enable each app and supply an immutable image:
+# postgresMigrationVerified: true
+# imagePullSecrets: [{name: ghcr-pull}]
+# apps:
+#   health:
+#     enabled: true
+#     image: ghcr.io/freddierice/health@sha256:<64-hex-digest>

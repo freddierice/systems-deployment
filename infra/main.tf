@@ -27,6 +27,12 @@ data "digitalocean_kubernetes_versions" "systems" {
   version_prefix = var.kubernetes_version_prefix
 }
 
+# Read the allocated egress after creation; the resource's optional egress block
+# is empty during its initial plan when DigitalOcean assigns the address.
+data "digitalocean_vpc_nat_gateway" "systems" {
+  id = digitalocean_vpc_nat_gateway.systems.id
+}
+
 resource "digitalocean_kubernetes_cluster" "systems" {
   name             = "systems"
   region           = var.region
@@ -40,8 +46,14 @@ resource "digitalocean_kubernetes_cluster" "systems" {
   surge_upgrade    = true
 
   control_plane_firewall {
-    enabled           = true
-    allowed_addresses = sort(tolist(var.admin_cidrs))
+    enabled = true
+    # Isolated nodes bootstrap through NAT before their internal control-plane
+    # route is established. Include this cluster's NAT egress explicitly.
+    allowed_addresses = sort(distinct(concat(tolist(var.admin_cidrs), flatten([
+      for egress in data.digitalocean_vpc_nat_gateway.systems.egresses : [
+        for gateway in egress.public_gateways : "${gateway.ipv4}/32"
+      ]
+    ]))))
   }
 
   maintenance_policy {
@@ -103,6 +115,8 @@ resource "digitalocean_database_user" "app" {
   for_each   = local.apps
   cluster_id = digitalocean_database_cluster.systems.id
   name       = each.key
+  # The API returns an empty settings block for PostgreSQL users.
+  settings {}
 }
 
 data "digitalocean_database_ca" "systems" {

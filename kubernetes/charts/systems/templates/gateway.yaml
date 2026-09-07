@@ -45,11 +45,14 @@ spec:
       containers:
         - name: caddy
           image: {{ .Values.gateway.image | quote }}
+          command: [caddy]
           args: [run, --config, /etc/systems/Caddyfile, --adapter, caddyfile]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
+            # The upstream binary has this file capability; its bounding set
+            # must retain it even though this configuration uses high ports.
+            capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}
           ports:
             - {name: http, containerPort: 8080}
             - {name: https, containerPort: 8443}

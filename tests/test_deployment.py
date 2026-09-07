@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def render(*arguments):
     return subprocess.run(
-        ["helm", "template", "systems", str(ROOT / "charts/systems"), "--namespace", "systems", *arguments],
+        ["helm", "template", "systems", str(ROOT / "kubernetes/charts/systems"), "--namespace", "systems", *arguments],
         text=True, capture_output=True,
     )
 
