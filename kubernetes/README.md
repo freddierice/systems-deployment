@@ -10,7 +10,7 @@ Terraform creates only the DigitalOcean infrastructure in `../infra`.
 | `values.example.yaml` | Deployment settings with apps disabled pending PostgreSQL migration |
 | `google-secrets.yaml` | The two Google Secret Manager resource names for operator credentials |
 | `bootstrap-google-secrets.py` | Read those versions through gcloud and install the operator Secret |
-| `charts/systems/` | Gateway, private CA egress, DNS, network policies, and optional applications |
+| `charts/systems/` | Traefik gateway, private CA egress, DNS, network policies, and optional applications |
 
 After saving the cluster kubeconfig and signing into Google with Secret Accessor
 permission on the two configured secrets:

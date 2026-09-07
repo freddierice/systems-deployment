@@ -7,7 +7,7 @@ Terraform for one DigitalOcean Kubernetes cluster named **systems**, with privat
 ```mermaid
 flowchart LR
     U[Authorized Tailscale clients] --> L[Tailscale LoadBalancer: systems]
-    L --> C[Caddy: HTTPS for app subdomains]
+    L --> C[Traefik: HTTPS for app subdomains]
     C --> H[health: ClusterIP]
     C --> T[trends: ClusterIP]
     H --> P[(systems-postgres: health database)]
@@ -23,23 +23,35 @@ flowchart LR
 | Directory | Resources |
 | --- | --- |
 | `infra/` | `systems` VPC in `nyc1`, default NAT gateway, DOKS with isolated workers and a control-plane firewall, one PostgreSQL primary, two databases and logins, database trusted-source firewall |
-| `kubernetes/` (Helm directly) | Tailscale Operator, local `systems` Helm chart, Caddy and persistent certificate storage, private CA routing, gateway-specific DNS resolver, network policies, optional app Deployments |
+| `kubernetes/` (Helm directly) | Tailscale Operator, local `systems` Helm chart, Traefik and persistent certificate storage, private CA routing, gateway-specific DNS resolver, network policies, optional app Deployments |
 
 Terraform manages only DigitalOcean resources in `infra/`. Kubernetes resources are installed separately by `kubernetes/deploy.sh` using Helm; there are no Helm or Kubernetes Terraform providers or resources. Create infrastructure and obtain a working kubeconfig before deploying Kubernetes configuration. Application images and database migrations belong in their application repositories. CI validates configuration with mocked providers and never applies infrastructure.
 
-Default capacity is two `s-2vcpu-4gb` workers and one `db-s-1vcpu-2gb` PostgreSQL primary, with no database standby. Caddy, each app, and each standalone Tailscale proxy run one replica. Updates and failover can interrupt requests; two workers do not make every component highly available. App replicas stay at one because the apps currently run background work inside their processes.
+Default capacity is two `s-2vcpu-4gb` workers and one `db-s-1vcpu-2gb` PostgreSQL primary, with no database standby. Traefik, each app, and each standalone Tailscale proxy run one replica. Updates and failover can interrupt requests; two workers do not make every component highly available. App replicas stay at one because the apps currently run background work inside their processes.
 
 ## Networking and HTTPS
 
 - Workers use `isolated_workers = true`, available for new DOKS 1.36+ clusters in public preview. A default DigitalOcean VPC NAT gateway supplies outbound traffic for provisioning, image pulls, Tailscale, and external APIs. A VPC by itself does not remove public worker IPs. [DOKS isolated workers](https://docs.digitalocean.com/products/kubernetes/how-to/create-clusters-with-isolated-worker-nodes/)
 - The DOKS API endpoint remains public with a restrictive firewall. `admin_cidrs` must contain the administrator/runner's **public egress** address, not its `100.x` Tailscale address. Terraform also allows the cluster NAT's allocated IPv4 address so isolated workers can bootstrap. The operator exposes an API proxy as `systems-operator` using `noauth` mode: it passes through Kubernetes credentials and RBAC, not anonymous cluster access. The example tailnet grant limits it to the owner. [API server proxy](https://tailscale.com/docs/kubernetes-operator/api-server-proxy)
-- The only application `LoadBalancer` uses `loadBalancerClass: tailscale`, with NodePort allocation disabled. There is no public DigitalOcean load balancer or Tailscale Funnel. Network policies permit the Tailscale namespace to reach Caddy, and Caddy to reach app ports. App egress remains available for external integrations.
+- The only application `LoadBalancer` uses `loadBalancerClass: tailscale`, with NodePort allocation disabled. There is no public DigitalOcean load balancer or Tailscale Funnel. Network policies permit the Tailscale namespace to reach Traefik, and Traefik to reach app ports. App egress remains available for external integrations.
 - VPC `10.70.0.0/20`, services `10.71.0.0/20`, pods `10.72.0.0/16`. Confirm these do not overlap existing VPCs or advertised tailnet routes before creation. The gateway's private DNS service reserves `10.71.0.53`.
 - PostgreSQL uses its **private hostname**, a Kubernetes trusted-source firewall rule, and `sslmode=verify-full` with the DigitalOcean database CA. The managed service may still have a public hostname; this repository does not publish it to applications or allow world access. App-level database isolation is established and tested by the bootstrap job, not merely by creating two logins.
 
-Existing private PKI is retained: Caddy gets certificates from `https://ca.freddie.xyz/acme/acme/directory`, using HTTP-01 and the public root certificate in `kubernetes/charts/systems/files/root_ca.crt`. Root SHA-256: `53de014733269d464ed65fac577936986355e2a55cf3d0ae81623aacf8daeab4`. No CA signing key is copied or required.
+Existing private PKI is retained: Traefik gets certificates from `https://ca.freddie.xyz/acme/acme/directory`, using HTTP-01 and the public root certificate in `kubernetes/charts/systems/files/root_ca.crt`. Root SHA-256: `53de014733269d464ed65fac577936986355e2a55cf3d0ae81623aacf8daeab4`. No CA signing key is copied or required.
 
-Caddy needs to reach the CA over Tailscale. An egress Service targets `ca-nyc1.impala-hen.ts.net`. A dedicated DNS resolver rewrites **only** `ca.freddie.xyz` for the gateway to this Service; Caddy still validates the certificate against `ca.freddie.xyz`. DOKS-managed CoreDNS is unchanged. The CA must also be allowed to connect back to the new load balancer on TCP 80 to validate and renew certificates. [Tailscale egress](https://tailscale.com/docs/kubernetes-operator/egress/access-tailnet-service)
+Traefik `v3.7.12` uses the file provider: Helm renders `traefik.yaml` and
+`routes.yaml` into the gateway ConfigMap. GET/HEAD on HTTP receive a permanent
+HTTPS redirect; other HTTP app requests have no matching router and receive
+404. The internal ACME challenge route remains available on port 80. Disabled
+apps have empty backend pools and return 503 once a valid TLS certificate is
+available. Strict SNI rejects TLS connections without a matching certificate.
+There is no exposed dashboard or gateway Kubernetes API credential.
+
+`privateCA.certificatesDurationHours: 24` aligns the renewal schedule with the
+existing CA's approximately 24-hour leaf certificates. Adjust it if the CA's
+issuance policy changes. [Traefik ACME configuration](https://doc.traefik.io/traefik/reference/install-configuration/tls/certificate-resolvers/acme/)
+
+Traefik needs to reach the CA over Tailscale. An egress Service targets `ca-nyc1.impala-hen.ts.net`. A dedicated DNS resolver rewrites **only** `ca.freddie.xyz` for the gateway to this Service; Traefik still validates the certificate against `ca.freddie.xyz`. DOKS-managed CoreDNS is unchanged. The CA must also be allowed to connect back to the new load balancer on TCP 80 to validate and renew certificates. [Tailscale egress](https://tailscale.com/docs/kubernetes-operator/egress/access-tailnet-service)
 
 ## Validate locally
 
@@ -117,6 +129,6 @@ kubectl --context do-nyc1-systems -n systems get service systems-gateway -o json
 
 The status may report a MagicDNS hostname; resolve it from a tailnet client to get its `100.x` address. At cutover, replace the existing `100.66.233.125` A-record targets for **health** and **trends** with that address. Check for stale AAAA records. The apex `freddie.xyz` and CA DNS are unaffected. Devices still need Tailscale access and the Freddie root installed.
 
-HTTP-01 is a two-way dependency: Caddy must reach the CA, and the CA's DNS must resolve each application hostname to the new gateway. A client-side `curl --resolve` alone does not satisfy CA validation. Before cutover, use a deliberate temporary DNS override on the CA resolver to issue and test certificates while normal users stay on the droplet; remove it once DNS is switched. Otherwise budget an issuance window during cutover. Verify certificate renewal across the existing short certificate lifetime, including after a gateway restart. Changing/deleting a Tailscale proxy's Kubernetes identity can change its tailnet IP and require a DNS update.
+HTTP-01 is a two-way dependency: Traefik must reach the CA, and the CA's DNS must resolve each application hostname to the new gateway. A client-side `curl --resolve` alone does not satisfy CA validation. Before cutover, use a deliberate temporary DNS override on the CA resolver to issue and test certificates while normal users stay on the droplet; remove it once DNS is switched. Otherwise budget an issuance window during cutover. Verify certificate renewal across the existing short certificate lifetime, including after a gateway restart. Changing/deleting a Tailscale proxy's Kubernetes identity can change its tailnet IP and require a DNS update.
 
-The Caddy PVC retains certificate/account state (`helm.sh/resource-policy: keep`). Preserve it across chart uninstall/reinstall; do not run multiple independent Caddy replicas against the same single-writer certificate store. Keep and back up operator-managed Secrets too, because they contain Tailscale device identity. A rollback after PostgreSQL has accepted new writes requires data reconciliation; pointing DNS back to the stale SQLite files would lose access to those writes.
+The gateway PVC retains certificate/account state (`helm.sh/resource-policy: keep`). Its historical name, `systems-caddy-data`, is retained to reuse the existing volume. Traefik stores its own state in `/data/traefik-acme.json`; previous Caddy files remain available for rollback and are not consumed by Traefik. Preserve the volume across chart uninstall/reinstall; do not run multiple independent Traefik replicas against the same single-writer certificate store. Keep and back up operator-managed Secrets too, because they contain Tailscale device identity. A rollback after PostgreSQL has accepted new writes requires data reconciliation; pointing DNS back to the stale SQLite files would lose access to those writes.

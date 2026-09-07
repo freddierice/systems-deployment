@@ -61,14 +61,17 @@ and grants; it must be merged into the existing policy.
 
 The API proxy passed a TLS-verified request with existing Kubernetes credentials
 that listed both nodes. A request from the deployment droplet through the
-application load balancer reached Caddy and received the intended HTTPS redirect.
-Caddy reached the private CA's ACME directory through its dedicated DNS resolver
-and Tailscale egress proxy, with TLS hostname and root verification.
+application load balancer reached Traefik and received the intended HTTPS redirect.
+Traefik registered its ACME account with the private CA through its dedicated DNS
+resolver and Tailscale egress proxy, using the configured CA root for verification.
 
-The gateway and its two dedicated DNS pods were verified Ready. The chart uses an
-explicit Caddy executable and retains `NET_BIND_SERVICE` in the capability
-bounding set because both upstream images attach that file capability to their
-binaries. The containers still run as non-root with a read-only root filesystem.
+The gateway now runs Traefik `v3.7.12`, deployed as Helm release `systems` revision
+2 on 2026-09-07. It and the two DNS pods are Ready. Traefik runs as UID 1000 with
+all Linux capabilities dropped and a read-only root filesystem. Only CoreDNS
+retains `NET_BIND_SERVICE` because its upstream binary carries that file capability.
+The existing PVC `systems-caddy-data` is reused; Traefik's separate
+`/data/traefik-acme.json` is owned by UID 1000 with mode `0600`. Old Caddy state is
+retained for rollback. The Tailscale Service identity and address are unchanged.
 
 ## Validation and remaining cutover
 
@@ -79,13 +82,17 @@ binaries. The containers still run as non-root with a read-only root filesystem.
   API firewall. The database has only the cluster trusted-source rule.
 - Live database grants, private TLS connectivity, and cross-database isolation
   passed.
-- Caddy's local health endpoint returned `ok`; HTTP GET returned a 308 HTTPS
-  redirect and HTTP POST returned 403.
+- Traefik's local `/ping` endpoint returned `OK`; live GET/HEAD requests through
+  Tailscale redirected to HTTPS and HTTP POST returned 404 for both app hostnames.
+- Native Traefik checks with an isolated local certificate and test backend passed:
+  GET/HEAD redirects, rejected HTTP writes, TLS preparation responses (503),
+  unknown host rejection, backend routing, and correct HTTPS forwarding despite
+  a spoofed incoming `X-Forwarded-Proto` header.
 - Tailscale load-balancer routing, the authenticated Kubernetes API proxy, and
   private CA connectivity passed. Application certificate issuance and renewal
   remain unverified: the app hostnames still resolve to the live droplet, so
   HTTP-01 validation does not target this gateway. Follow the README's certificate
-  and DNS cutover procedure during migration; Caddy may retry issuance meanwhile.
+  and DNS cutover procedure during migration; Traefik may retry issuance meanwhile.
 - Both application Deployments remain disabled. No SQLite data has been migrated,
   no application code has been changed, and no application DNS has been switched.
   The live droplet deployment remains the current service.

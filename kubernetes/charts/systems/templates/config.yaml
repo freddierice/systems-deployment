@@ -5,48 +5,75 @@ metadata:
 data:
   root_ca.crt: |
 {{ .Files.Get "files/root_ca.crt" | indent 4 }}
-  Caddyfile: |
-    {
-      admin off
-      http_port 8080
-      https_port 8443
-      auto_https disable_redirects
-      servers {
-        protocols h1 h2
-      }
-    }
-
-    :8081 {
-      respond /healthz "ok" 200
-    }
-
-    (private_tls) {
-      tls {
-        issuer acme {
-          dir {{ .Values.privateCA.directory }}
-          test_dir {{ .Values.privateCA.directory }}
-          trusted_roots /etc/systems/root_ca.crt
-          disable_tlsalpn_challenge
-        }
-      }
-    }
-
-    {{- range $name, $app := .Values.apps }}
-    http://{{ $app.hostname }} {
-      @read method GET HEAD
-      redir @read https://{{ $app.hostname }}{uri} 308
-      respond "Use HTTPS before making changes." 403
-    }
-
-    https://{{ $app.hostname }} {
-      import private_tls
-      {{- if $app.enabled }}
-      reverse_proxy {{ $name }}.{{ $.Release.Namespace }}.svc.cluster.local:8000
-      {{- else }}
-      respond "Deployment preparation is in progress." 503
-      {{- end }}
-    }
-    {{- end }}
+  traefik.yaml: |
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
+    log:
+      format: json
+      level: INFO
+    entryPoints:
+      web:
+        address: ":8080"
+      websecure:
+        address: ":8443"
+      health:
+        address: ":8081"
+    ping:
+      entryPoint: health
+    providers:
+      file:
+        filename: /etc/systems/routes.yaml
+        watch: true
+    certificatesResolvers:
+      freddie:
+        acme:
+          caServer: {{ .Values.privateCA.directory | quote }}
+          caCertificates: [/etc/systems/root_ca.crt]
+          certificatesDuration: {{ .Values.privateCA.certificatesDurationHours }}
+          keyType: EC256
+          storage: /data/traefik-acme.json
+          httpChallenge:
+            entryPoint: web
+  routes.yaml: |
+    tls:
+      options:
+        default:
+          minVersion: VersionTLS12
+          sniStrict: true
+    http:
+      middlewares:
+        https-redirect:
+          redirectScheme:
+            scheme: https
+            permanent: true
+      routers:
+        {{- range $name, $app := .Values.apps }}
+        {{ $name }}-http:
+          entryPoints: [web]
+          # HTTP writes have no matching app router and receive 404.
+          rule: {{ printf "Host(`%s`) && (Method(`GET`) || Method(`HEAD`))" $app.hostname | quote }}
+          middlewares: [https-redirect]
+          service: noop@internal
+        {{ $name }}-https:
+          entryPoints: [websecure]
+          rule: {{ printf "Host(`%s`)" $app.hostname | quote }}
+          service: {{ $name }}
+          tls:
+            certResolver: freddie
+        {{- end }}
+      services:
+        {{- range $name, $app := .Values.apps }}
+        {{ $name }}:
+          loadBalancer:
+            {{- if $app.enabled }}
+            servers:
+              - url: {{ printf "http://%s.%s.svc.cluster.local:8000" $name $.Release.Namespace | quote }}
+            {{- else }}
+            # An empty load balancer returns 503 until this app is enabled.
+            servers: []
+            {{- end }}
+        {{- end }}
   Corefile: |
     .:1053 {
       errors

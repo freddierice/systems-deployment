@@ -20,7 +20,7 @@ spec:
       port: 443
       targetPort: https
 ---
-# Caddy needs outbound tailnet access to the existing private ACME service.
+# Traefik needs outbound tailnet access to the existing private ACME service.
 apiVersion: v1
 kind: Service
 metadata:
