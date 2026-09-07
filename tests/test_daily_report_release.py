@@ -32,6 +32,13 @@ def commit(repo, message):
     return git(repo, "rev-parse", "HEAD")
 
 
+def with_suspension(manifest, suspended):
+    resources = list(yaml.safe_load_all(manifest))
+    cron = next(r for r in resources if r["kind"] == "CronJob" and r["metadata"]["name"] == "daily-report")
+    cron["spec"]["suspend"] = suspended
+    return yaml.safe_dump_all(resources)
+
+
 class DailyReportReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -70,14 +77,17 @@ class DailyReportReleaseTests(unittest.TestCase):
                 release.verify_schema("daily-report", None, changed, repo, schema_verified=True)
 
     def test_image_guard_allows_only_the_cronjob_image(self):
-        self.assertFalse(release.image_only(self.before, self.after, "daily-report", self.old_image, IMAGE))
-        self.assertTrue(release.image_only(self.after, self.after, "daily-report", self.old_image, IMAGE))
-        for field, value in (("schedule", "0 7 * * *"), ("suspend", False), ("concurrencyPolicy", "Allow")):
-            changed = list(yaml.safe_load_all(self.after))
-            cron = next(r for r in changed if r["kind"] == "CronJob")
-            cron["spec"][field] = value
-            with self.subTest(field=field), self.assertRaisesRegex(release.ReleaseError, "more than"):
-                release.image_only(self.before, yaml.safe_dump_all(changed), "daily-report", self.old_image, IMAGE)
+        for suspended in (False, True):
+            before = with_suspension(self.before, suspended)
+            after = with_suspension(self.after, suspended)
+            self.assertFalse(release.image_only(before, after, "daily-report", self.old_image, IMAGE))
+            self.assertTrue(release.image_only(after, after, "daily-report", self.old_image, IMAGE))
+            for field, value in (("schedule", "0 7 * * *"), ("suspend", not suspended), ("concurrencyPolicy", "Allow")):
+                changed = list(yaml.safe_load_all(after))
+                cron = next(r for r in changed if r["kind"] == "CronJob")
+                cron["spec"][field] = value
+                with self.subTest(suspended=suspended, field=field), self.assertRaisesRegex(release.ReleaseError, "more than"):
+                    release.image_only(before, yaml.safe_dump_all(changed), "daily-report", self.old_image, IMAGE)
         changed = list(yaml.safe_load_all(self.after))
         health = next(r for r in changed if r["kind"] == "Deployment" and r["metadata"]["name"] == "health")
         health["spec"]["template"]["spec"]["containers"][0]["image"] = IMAGE
@@ -85,33 +95,41 @@ class DailyReportReleaseTests(unittest.TestCase):
             release.image_only(self.before, yaml.safe_dump_all(changed), "daily-report", self.old_image, IMAGE)
 
     def test_live_schedule_drift_does_not_get_overwritten(self):
-        cron = release.resources(self.before)["batch/v1", "CronJob", "systems", "daily-report"]
-        with patch.object(release, "output", return_value=json.dumps(cron)):
-            release.verify_report_schedule(self.after)
-        for field, value in (("suspend", False), ("schedule", "0 7 * * *"), ("timeZone", "UTC")):
-            live = copy.deepcopy(cron)
-            live["spec"][field] = value
-            with self.subTest(field=field), patch.object(release, "output", return_value=json.dumps(live)):
-                with self.assertRaisesRegex(release.ReleaseError, "scheduling differs"):
-                    release.verify_report_schedule(self.after)
+        for suspended in (False, True):
+            after = with_suspension(self.after, suspended)
+            cron = release.resources(with_suspension(self.before, suspended))["batch/v1", "CronJob", "systems", "daily-report"]
+            with patch.object(release, "output", return_value=json.dumps(cron)):
+                release.verify_report_schedule(after)
+            for field, value in (("suspend", not suspended), ("schedule", "0 7 * * *"), ("timeZone", "UTC")):
+                live = copy.deepcopy(cron)
+                live["spec"][field] = value
+                with self.subTest(suspended=suspended, field=field), patch.object(release, "output", return_value=json.dumps(live)):
+                    with self.assertRaisesRegex(release.ReleaseError, "scheduling differs"):
+                        release.verify_report_schedule(after)
 
-    def exercise_deploy(self, *, dry_run=False, failure=None, stale=False, advanced_during_smoke=False):
+    def exercise_deploy(self, *, dry_run=False, failure=None, stale=False, advanced_during_smoke=False, suspended=None):
+        initial_values, before, after = VALUES, self.before, self.after
+        if suspended is not None:
+            parsed = yaml.safe_load(VALUES)
+            parsed["dailyReport"]["suspend"] = suspended
+            initial_values = yaml.safe_dump(parsed)
+            before, after = with_suspension(self.before, suspended), with_suspension(self.after, suspended)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             values = root / release.VALUES
             values.parent.mkdir(parents=True)
-            values.write_text(VALUES)
+            values.write_text(initial_values)
             args = SimpleNamespace(app="daily-report", source_sha=SHA, image_digest=DIGEST,
                                    run_id="123", dry_run=dry_run, schema_verified=False)
             actions = []
 
             def fake_output(*arguments, **kwargs):
                 if arguments[:2] == ("helm", "template"):
-                    return self.after
+                    return after
                 if arguments[0] == "helm" and "status" in arguments:
                     return json.dumps({"version": 8, "info": {"status": "deployed"}})
                 if "manifest" in arguments:
-                    return self.before
+                    return before
                 if "rev-parse" in arguments:
                     return "c" * 40
                 return ""
@@ -122,7 +140,7 @@ class DailyReportReleaseTests(unittest.TestCase):
 
             def fake_smoke(manifest):
                 actions.append(("isolated-smoke",))
-                self.assertEqual(manifest, self.after)
+                self.assertEqual(manifest, after)
                 if failure == "smoke":
                     raise release.ReleaseError("Smoke failed")
 
@@ -142,12 +160,13 @@ class DailyReportReleaseTests(unittest.TestCase):
                 upgrades = [action for action in actions if "upgrade" in action]
                 self.assertFalse(any("rollback" in action for action in actions))
                 if dry_run or failure or stale or advanced_during_smoke:
-                    self.assertEqual(values.read_text(), VALUES)
+                    self.assertEqual(values.read_text(), initial_values)
                     record.assert_not_called()
                     self.assertEqual(upgrades, [])
                 else:
                     self.assertEqual(yaml.safe_load(values.read_text())["dailyReport"]["image"], IMAGE)
-                    self.assertTrue(yaml.safe_load(values.read_text())["dailyReport"]["suspend"])
+                    self.assertEqual(yaml.safe_load(values.read_text())["dailyReport"]["suspend"],
+                                     yaml.safe_load(initial_values)["dailyReport"]["suspend"])
                     record.assert_called_once_with("daily-report", SHA, "123")
                     self.assertLess(actions.index(("isolated-smoke",)), actions.index(upgrades[0]))
                     self.assertEqual(schedule.call_count, 2)
@@ -172,7 +191,9 @@ class DailyReportReleaseTests(unittest.TestCase):
         self.exercise_deploy(advanced_during_smoke=True)
 
     def test_success_smokes_before_only_future_jobs_receive_image(self):
-        self.exercise_deploy()
+        for suspended in (False, True):
+            with self.subTest(suspended=suspended):
+                self.exercise_deploy(suspended=suspended)
 
     def exercise_smoke(self, phase="Succeeded", *, timed_out=False, creation_failed=False, deletion_failed=False):
         manifests = []

@@ -29,7 +29,7 @@ The corresponding Google Secret Manager names are
 in `kubernetes/google-secrets.yaml`. Mutable provider OAuth tokens belong on the
 PVC, so replacing a Secret cannot revert a rotated refresh token.
 
-## Printer route and migration status
+## Printer route and migration status — 2026-09-07
 
 The source host's printer connection was already broken at discovery on
 2026-09-07. Its `bluesummer.biz` Tailscale identity and its Home Assistant subnet
@@ -37,26 +37,37 @@ router expired on August 27. The last completed print was job 184 on August 27;
 jobs 185–195 (August 28–September 7) were canceled after three hours with
 `printer is unreachable`. No print jobs remained queued.
 
-The cached router is `homeassistant.taile78e54.ts.net` (`100.64.102.10`), advertising
-only `10.0.0.33/32`. Systems belongs to the `freddie.rice@gmail.com` tailnet
-(`impala-hen.ts.net`), a different tailnet.
-For the chart's printer egress Service to work, an always-on host on the printer
-LAN must advertise and have approval for `10.0.0.33/32` in the systems tailnet.
-Its policy must allow the systems printer proxy to TCP 631. Cross-tailnet device
-sharing does not share subnet routes. See the [Tailscale subnet egress
+Home Assistant is now connected to the systems tailnet
+(`freddie.rice@gmail.com`, `impala-hen.ts.net`) at `100.84.140.78`, with its
+advertised printer route `10.0.0.33/32` approved. This supplies the subnet route
+in the same tailnet as the systems operator.
+
+Helm revision 13 enabled `dailyReport.printer.enabled` and installed the
+`daily-report-printer` ProxyClass with `tailscale.acceptRoutes: true`, recorded
+in systems commit `00e9224`. The printer Service uses that ProxyClass to reach
+`10.0.0.33:631`; the report's URI is
+`ipp://daily-report-printer.systems.svc.cluster.local/ipp/print`. The target
+supports PDF directly through IPP Everywhere. See the [Tailscale subnet egress
 guide](https://tailscale.com/docs/kubernetes-operator/egress/access-ip-behind-subnet-router).
+`dailyReport.printer.uri` can instead point to an explicitly configured private
+print endpoint.
 
-When that route is available, set `dailyReport.printer.enabled: true`. The
-operator maps `daily-report-printer` to the printer's IP, and the report uses
-`ipp://daily-report-printer.systems.svc.cluster.local/ipp/print`. The target supports
-PDF directly through IPP Everywhere. `dailyReport.printer.uri` can instead point
-to an explicitly configured private print endpoint.
+The source daily report cron entry is disabled. Final state transfer, printer
+preflight and the first cluster report completed successfully; the printer
+reported job 341 completed for the September 7 report. Helm revision 14 is
+deployed with `dailyReport.suspend: false`; the recurring cluster schedule is
+active. Its next scheduled run is September 8 at 5:30 a.m. America/Chicago
+(10:30 UTC). Do not enable both schedules.
 
-The cluster schedule is staged **suspended** pending printer connectivity and
-verification. The source cron is still enabled. Do not enable both schedules.
-Existing source data also has a Whoop refresh failure and stale health data;
-migration preserves the provider configuration and does not repair those
-pre-existing provider issues.
+Whoop's invalid refresh-token error appears in source logs from August 8 onward. Withings refreshed
+successfully on the source on September 7 in the morning, but an invalid
+refresh-token error was first observed in the cluster during cutover. The
+Withings tokens match across the source, staged and final snapshots, and its
+client credentials and refresh request are unchanged. No newer credential was
+recoverable. Both providers need OAuth reauthorization to restore fresh health
+data. Until then, health values can remain cached, as permitted by the existing
+report behavior. Report generation, Drive upload and printing succeeded despite
+these provider warnings.
 
 The protected initial recovery snapshot is
 `gs://freddie-systems-migration-186933910776/daily-report-2026-09-07/`.
@@ -68,8 +79,10 @@ workout. Public access prevention and uniform bucket-level access are enforced.
 
 Helm revision 11 installed the suspended CronJob, ServiceAccount and 1 GiB PVC.
 Comparison with the previous rendered release showed no changed or removed
-existing resources. The printer Service remains disabled while its route is
-unavailable. Health, Trends, Traefik and the systems DNS replicas stayed Ready.
+existing resources. At that initial staging step the printer Service was
+disabled while its route was unavailable. Health, Trends, Traefik and the systems
+DNS replicas stayed Ready. The printer route was subsequently configured in
+revision 13 as described above.
 
 The image was built from clean local Time commit
 `8baafa098d90034a7efcd1088cb9e03b9b132e0e`, with digest
@@ -91,11 +104,10 @@ by these checks. The temporary pod and builder were removed after verification.
 
 The protected recovery prefix also holds `staged-data.tar`,
 `render-verification.json`, `image-metadata.json` and `time-cluster.bundle`.
-The bundle preserves the complete tested Time commit. Publishing that commit
-to `freddierice/time` is pending: GitHub rejected the source host's read-only
-deploy key. A dedicated `codex-time-deploy` public key has been supplied for
-repository write access. Systems configuration is already published on its
-repository's `main` branch.
+The bundle preserves the complete tested initial Time commit. The container
+migration and subsequent Actions setup are now published on `freddierice/time`'s
+`main` branch. Systems configuration is also published on its repository's
+`main` branch.
 
 ## GitHub Actions release setup — 2026-09-07
 
@@ -112,32 +124,62 @@ credential. Verification found no project-role, runtime-secret or deployment-
 secret grants for that publisher. Existing Health/Trends trust was preserved.
 The registry publisher credential remains denied Kubernetes account access.
 
-All 104 application/deployment tests and actionlint checks passed. A candidate
-image built from that commit at
-`sha256:bbefcf7a163fbff9bc376bd91071e303642d59151e3aa32c2ab1306875b1293e`
-passed the reusable deployer's real cluster smoke check with temporary storage,
-no runtime credentials, and denied network access. The CronJob spec was identical
-before and after the check; the smoke pod and its policy were removed. This
-candidate was not assigned to the scheduled CronJob. The first GitHub-hosted
-release run remains pending publication of the Time commits with a writable
-repository key.
+All 104 application/deployment tests and actionlint checks passed. Before
+publication, a candidate image passed the reusable deployer's real cluster smoke
+check with temporary storage, no runtime credentials, and denied network access.
+The CronJob spec was identical before and after the check; the smoke pod and its
+policy were removed.
+
+The first [GitHub Actions release, run 34166494538](https://github.com/freddierice/time/actions/runs/34166494538),
+successfully published Time commit
+`c91a99c67d0168018470e43fa139e7c8590d2522` and deployed the resulting image:
+
+```text
+registry.digitalocean.com/freddierice-systems/daily-report@sha256:93e6316c6b2986722771de056e00b9b8ce306efac51703663b8fb0cebab2ba96
+```
+
+Systems release commit `979b444ef9262ec54acc01a51fdea60eb18bc6cd`, recorded at
+22:26:39 UTC, pins that image and source revision in production values. The
+release updated the live CronJob image and preserved its then-current
+`suspend: true`. The isolated smoke pod, its network policy, and the shared
+release lock were cleaned up. This confirms the automatic image release path.
+The same CI image then completed the physical cutover below.
 
 ## Cutover and recovery
 
-1. Restore the printer route and verify the container's `preflight` command from
-   a temporary Job using the production CronJob pod template. This queries
-   printer capabilities without submitting a print.
-2. Back up `crontab -u daily -l` on the source. Remove only the exact daily report
-   entry, and verify no report process remains active. Keep its source, data and
-   credentials for recovery.
-3. With the CronJob still suspended and no Job using its PVC, transfer a final
-   consistent `health.db` and the current OAuth JSON files from the source to
-   `/data`. Verify database integrity, row counts and file checksums. Do not copy
-   `.envrc` or the Google private key into the image or PVC.
-4. Run a single production Job and verify report generation, Drive upload and
-   the printer's completed job state. The original job must remain disabled.
-5. Commit `dailyReport.suspend: false` in production values and upgrade only the
-   systems Helm release. Check the CronJob's next 5:30 a.m. Central execution.
+The production `preflight` passed through the printer Service using actual IPP
+responses. The printer advertised acceptance of PDF, Letter, color, 600 dpi and
+long-edge duplex.
+
+Only the exact daily report cron line was removed from the source. Its original
+crontab is retained on that host at
+`/home/daily/.local/state/daily-report-cutover-20260907/crontab.before` and as
+`source-cron-before-cutover.txt` in the protected recovery prefix above.
+
+A final consistent SQLite snapshot and all four OAuth token files were copied
+to the PVC while the cluster schedule was suspended. All five file hashes
+matched, SQLite integrity passed, and the database contained 122 health rows and
+one workout. `runtime-final.tar` and its checksum record are retained in the
+same protected recovery prefix. Runtime environment settings and the Google
+private key remain in Secrets, outside the image and PVC.
+
+Manual Job `daily-report-cutover-20260907`, using the CI image above, succeeded
+at 22:33:06 UTC on September 7. Google Drive upload and PDF generation succeeded,
+and the printer reported terminal state 9 (`completed`) with reason
+`job-completed-successfully` for print job 341. The print record on the PVC shows
+completion at 22:33:03 UTC. A subsequent verification run returned
+`Report 2026-09-07 already completed; skipping`, confirming that another run does
+not submit the same report again. SQLite integrity remained valid.
+
+The protected recovery prefix also contains `cutover-data.tar`,
+`cutover-verification.txt` and `cutover-job.log`. This final archive preserves the
+rotated calendar tokens and completed print record along with the database.
+
+The source cron must remain disabled. Helm revision 14 is deployed, and the live
+CronJob confirms `suspend: false`, schedule `30 5 * * *`, and timezone
+`America/Chicago`. Activation was verified at 22:34:37 UTC and recorded in
+published systems commit `80946a4`. Check the first scheduled cluster execution
+on September 8 at 5:30 a.m. America/Chicago (10:30 UTC).
 
 Use `kubectl --context do-nyc1-systems -n systems get cronjob,jobs` and `kubectl
 --context do-nyc1-systems -n systems logs job/JOB_NAME` to inspect executions.
