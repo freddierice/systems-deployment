@@ -2,9 +2,9 @@
 
 The report source is `freddierice/time`. The original installation was
 `daily@137.184.18.81:/home/daily/time`, scheduled at `30 5 * * *` in
-`America/Chicago`. It syncs Whoop, Withings and Strong, uploads `health.db` to
-Google Drive, renders the planner with Todoist and Google Calendar, and prints
-Letter paper with `sides=two-sided-long-edge`.
+`America/Chicago`. It reads measurements and completed workouts from Health,
+uploads `health.db` to Google Drive, renders the planner with Todoist and Google
+Calendar, and prints Letter paper with `sides=two-sided-long-edge`.
 
 ## Cluster configuration
 
@@ -21,13 +21,57 @@ the SQLite database, refreshed OAuth token files, generated PDF and print record
 The pod runs as UID/GID 1000 with a read-only root filesystem, a writable `/tmp`,
 and no Kubernetes API token. It does not pull Git or install packages at runtime.
 
-The `daily-report-runtime` Secret holds provider client settings and the Todoist
-token. `daily-report-google` supplies `google.json` at
+The `daily-report-runtime` Secret holds the Todoist token and legacy provider
+settings. Time no longer uses its Whoop or Withings credentials; Health owns
+provider synchronization. `daily-report-google` supplies `google.json` at
 `/etc/daily-report/google.json` for the existing Google Drive integration.
 The corresponding Google Secret Manager names are
 `systems-daily-report-runtime` and `systems-daily-report-google`; both are included
 in `kubernetes/google-secrets.yaml`. Mutable provider OAuth tokens belong on the
 PVC, so replacing a Secret cannot revert a rotated refresh token.
+
+## Health data source
+
+The CronJob uses `HEALTH_API_URL=http://health.systems.svc.cluster.local:8000` and
+`HEALTH_API_HOST=health.freddie.xyz` to read Health's measurement history and
+completed workouts. The client sends the canonical Host and
+`X-Forwarded-Proto: https` headers over the
+trusted internal service route, as the existing Health probes do. The
+`daily-report-to-health` NetworkPolicy permits only report pods in the same
+namespace to reach Health on TCP 8000. No provider OAuth calls or new credentials
+are needed in Time.
+
+`dailyReport.health.url` can override the base URL; an empty value selects the
+Health Service in the release namespace. `dailyReport.health.host` controls the
+optional Host override and forwarded HTTPS header. Set it empty when using a
+normal HTTPS URL that does not need proxy headers. Public HTTPS access also
+requires a reachable route and trust for the private CA.
+
+Health provides weight history and the activity source selected in its catalog:
+Fitbit, manually recorded activity, or locally completed workouts. Time uses the
+selected source without mixing activity from the others. Health has no HRV,
+resting heart rate or sleep measurements to export, so those report values are
+missing until Health supports them. Time no longer syncs Strong directly.
+Provider reauthorization, freshness and source corrections are managed in Health.
+Legacy provider rows remain archived in the local database, but reports only
+read the Health cache and never fall back to direct-provider history.
+
+Apply this chart's environment and NetworkPolicy update before releasing the
+Time image: the reusable app deployer permits image changes only. The first
+Health-backed Time release changes `db.py`, so automatic deployment must stop at
+the schema gate. Back up the report database, apply and verify its migration
+without printing, then use `scripts/deploy-app.py --app daily-report` with the
+exact published source/image/run identifiers and `--schema-verified`. Preserve
+the schedule, PVC and print records. Verify a read from Health and report
+generation without submitting a new print job before the next scheduled run.
+
+When GitHub Actions cannot be read through an authenticated GitHub API, the
+published DOCR image's provenance contains its exact Actions run URL. The local
+operator helper `/tmp/time-health-image-provenance.py SOURCE_SHA` reads that
+provenance and prints only the image digest and run URL. It obtains a temporary
+read-only registry credential through the existing `freddie-pki` doctl context;
+credentials are not saved or printed. The helper is a local inspection aid and
+is not required by the scheduled report or normal release workflow.
 
 ## Printer route and migration status — 2026-09-07
 
@@ -59,15 +103,15 @@ deployed with `dailyReport.suspend: false`; the recurring cluster schedule is
 active. Its next scheduled run is September 8 at 5:30 a.m. America/Chicago
 (10:30 UTC). Do not enable both schedules.
 
-Whoop's invalid refresh-token error appears in source logs from August 8 onward. Withings refreshed
-successfully on the source on September 7 in the morning, but an invalid
+At cutover, Whoop's invalid refresh-token error appeared in source logs from
+August 8 onward. Withings refreshed successfully on the source on September 7
+in the morning, but an invalid
 refresh-token error was first observed in the cluster during cutover. The
 Withings tokens matched across the source, staged and final snapshots, and its
 client credentials and refresh request are unchanged. No newer credential was
-recoverable. Both providers need OAuth reauthorization to restore fresh health
-data. Until then, health values can remain cached, as permitted by the existing
-report behavior. Report generation, Drive upload and printing succeeded despite
-these provider warnings.
+recoverable. The old direct-provider report needed OAuth reauthorization to
+restore fresh health data and allowed cached values. Report generation, Drive
+upload and printing succeeded despite these provider warnings.
 
 ## Staging verification — 2026-09-07
 

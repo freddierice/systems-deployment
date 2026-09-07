@@ -58,6 +58,23 @@ spec:
             matchLabels: {systems.freddie.xyz/gateway: 'true'}
       ports:
         - {port: 8000, protocol: TCP}
+{{- if .Values.dailyReport.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: daily-report-to-health
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: health}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: daily-report}
+      ports:
+        - {port: 8000, protocol: TCP}
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

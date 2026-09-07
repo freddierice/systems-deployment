@@ -15,6 +15,12 @@ dailyReport:
   failedJobsHistoryLimit: 3
   runtimeSecret: daily-report-runtime
   googleSecret: daily-report-google
+  health:
+    # Empty uses the Health Service in the release namespace.
+    url: ""
+    # The trusted internal route uses Health's canonical host and HTTPS headers.
+    # Empty omits these headers, for example when url is the public HTTPS origin.
+    host: health.freddie.xyz
   persistence:
     storageClassName: do-block-storage-retain
     size: 1Gi

@@ -75,6 +75,11 @@ spec:
                 - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
                 - {name: PYTHONUNBUFFERED, value: "1"}
                 - {name: GDRIVE_CREDENTIALS, value: /etc/daily-report/google.json}
+                - name: HEALTH_API_URL
+                  value: {{ $report.health.url | default (printf "http://health.%s.svc.cluster.local:8000" .Release.Namespace) | quote }}
+                {{- if $report.health.host }}
+                - {name: HEALTH_API_HOST, value: {{ $report.health.host | quote }}}
+                {{- end }}
                 - name: PRINTER_URI
                   value: {{ $report.printer.uri | default (printf "ipp://daily-report-printer.%s.svc.cluster.local/ipp/print" .Release.Namespace) | quote }}
                 - {name: STEP_TIMEOUT_SECONDS, value: "600"}

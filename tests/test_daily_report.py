@@ -71,6 +71,8 @@ class DailyReportTests(unittest.TestCase):
         self.assertEqual(env["DATA_DIR"], "/data")
         self.assertEqual(env["TZ"], "America/Chicago")
         self.assertEqual(env["GDRIVE_CREDENTIALS"], "/etc/daily-report/google.json")
+        self.assertEqual(env["HEALTH_API_URL"], "http://health.systems.svc.cluster.local:8000")
+        self.assertEqual(env["HEALTH_API_HOST"], "health.freddie.xyz")
         volumes = {entry["name"]: entry for entry in pod["volumes"]}
         self.assertEqual(volumes["data"]["persistentVolumeClaim"]["claimName"], "daily-report-data")
         self.assertEqual(volumes["tmp"]["emptyDir"], {})
@@ -82,6 +84,26 @@ class DailyReportTests(unittest.TestCase):
         self.assertEqual(mounts["data"]["mountPath"], "/data")
         self.assertTrue(mounts["google"]["readOnly"])
         self.assertEqual(mounts["google"]["mountPath"], "/etc/daily-report")
+
+    def test_report_health_route_can_use_an_https_endpoint_without_proxy_headers(self):
+        resources = self.report_resources("--set", "dailyReport.health.url=https://health.freddie.xyz",
+                                          "--set", "dailyReport.health.host=")
+        pod = resources["CronJob", "daily-report"]["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        env = {entry["name"]: entry["value"] for entry in pod["containers"][0]["env"]}
+        self.assertEqual(env["HEALTH_API_URL"], "https://health.freddie.xyz")
+        self.assertNotIn("HEALTH_API_HOST", env)
+
+    def test_only_report_pods_receive_internal_health_access(self):
+        resources = self.report_resources()
+        policy = resources["NetworkPolicy", "daily-report-to-health"]["spec"]
+        self.assertEqual(policy, {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "health"}},
+            "policyTypes": ["Ingress"],
+            "ingress": [{
+                "from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "daily-report"}}}],
+                "ports": [{"port": 8000, "protocol": "TCP"}],
+            }],
+        })
 
     def test_report_runs_unprivileged_without_cluster_credentials(self):
         resources = self.report_resources("--set", "imagePullSecrets[0].name=freddierice-systems")
