@@ -62,18 +62,12 @@ active. Its next scheduled run is September 8 at 5:30 a.m. America/Chicago
 Whoop's invalid refresh-token error appears in source logs from August 8 onward. Withings refreshed
 successfully on the source on September 7 in the morning, but an invalid
 refresh-token error was first observed in the cluster during cutover. The
-Withings tokens match across the source, staged and final snapshots, and its
+Withings tokens matched across the source, staged and final snapshots, and its
 client credentials and refresh request are unchanged. No newer credential was
 recoverable. Both providers need OAuth reauthorization to restore fresh health
 data. Until then, health values can remain cached, as permitted by the existing
 report behavior. Report generation, Drive upload and printing succeeded despite
 these provider warnings.
-
-The protected initial recovery snapshot is
-`gs://freddie-systems-migration-186933910776/daily-report-2026-09-07/`.
-It contains source revision `5ad1449013cd3f8053487d61d492fab828182a49`, the original
-runtime files and a database integrity/count record: 122 health rows and one
-workout. Public access prevention and uniform bucket-level access are enforced.
 
 ## Staging verification — 2026-09-07
 
@@ -102,12 +96,9 @@ authenticated successfully and confirmed edit capability on the existing
 `health.db` backup. No health sync, backup upload, or physical print was triggered
 by these checks. The temporary pod and builder were removed after verification.
 
-The protected recovery prefix also holds `staged-data.tar`,
-`render-verification.json`, `image-metadata.json` and `time-cluster.bundle`.
-The bundle preserves the complete tested initial Time commit. The container
-migration and subsequent Actions setup are now published on `freddierice/time`'s
-`main` branch. Systems configuration is also published on its repository's
-`main` branch.
+The container migration and subsequent Actions setup are published on
+`freddierice/time`'s `main` branch. Systems configuration is also published on
+its repository's `main` branch.
 
 ## GitHub Actions release setup — 2026-09-07
 
@@ -151,18 +142,13 @@ The production `preflight` passed through the printer Service using actual IPP
 responses. The printer advertised acceptance of PDF, Letter, color, 600 dpi and
 long-edge duplex.
 
-Only the exact daily report cron line was removed from the source. Its original
-crontab was backed up at
-`/home/daily/.local/state/daily-report-cutover-20260907/crontab.before` and archived
-as `source-cron-before-cutover.txt` in the protected recovery prefix above. The
-GCS copy remains the recovery copy after source-host cleanup.
+Only the exact daily report cron line was removed from the source.
 
 A final consistent SQLite snapshot and all four OAuth token files were copied
 to the PVC while the cluster schedule was suspended. All five file hashes
 matched, SQLite integrity passed, and the database contained 122 health rows and
-one workout. `runtime-final.tar` and its checksum record are retained in the
-same protected recovery prefix. Runtime environment settings and the Google
-private key remain in Secrets, outside the image and PVC.
+one workout. Runtime environment settings and the Google private key remain in
+Secrets, outside the image and PVC.
 
 Manual Job `daily-report-cutover-20260907`, using the CI image above, succeeded
 at 22:33:06 UTC on September 7. Google Drive upload and PDF generation succeeded,
@@ -171,10 +157,6 @@ and the printer reported terminal state 9 (`completed`) with reason
 completion at 22:33:03 UTC. A subsequent verification run returned
 `Report 2026-09-07 already completed; skipping`, confirming that another run does
 not submit the same report again. SQLite integrity remained valid.
-
-The protected recovery prefix also contains `cutover-data.tar`,
-`cutover-verification.txt` and `cutover-job.log`. This final archive preserves the
-rotated calendar tokens and completed print record along with the database.
 
 The source cron must remain disabled. Helm revision 14 is deployed, and the live
 CronJob confirms `suspend: false`, schedule `30 5 * * *`, and timezone
@@ -187,16 +169,13 @@ Use `kubectl --context do-nyc1-systems -n systems get cronjob,jobs` and `kubectl
 Do not blindly delete print records or retry an ambiguous submission; inspect
 the printer's job history first to avoid printing the same report twice.
 
-For rollback, suspend the cluster schedule first and wait for any active report
-Job to stop. Preserve the current PVC and refreshed tokens. Recovery on the
-source host after cleanup requires fresh SSH access and rebuilding the original
-installation from the protected GCS archives. Reconcile the most recent token
-files, database and print status before restoring its runtime configuration or
-cron; an older archive must not replace current rotated tokens or completed
-print records. The source host also needs a working printer route; rebuilding
-its installation does not fix its expired Tailscale login. Retained PVCs and
-block volumes require explicit administrator cleanup when recovery is no longer
-needed.
+For an image rollback, suspend the cluster schedule first and wait for any
+active report Job to stop. Preserve the live PVC, refreshed tokens and completed
+print records. Select a previous image compatible with the current database,
+and reconcile print status before any manual run. The source host no longer has
+an installed fallback or migration SSH access. Rebuilding there would require
+fresh access, the published Time repository, current runtime state and a working
+printer route.
 
 ## Source cleanup — completed 2026-09-07
 
@@ -211,12 +190,19 @@ preserving the other two entries. A fresh connection using only the migration
 key, with no SSH agent or multiplexed connection, failed with
 `Permission denied (publickey)`. The local private and public key files were
 also deleted. The source host no longer provides an installed fallback or
-migration SSH access; recovery requires the protected GCS archives and fresh
-access as described above. `source-decommission.txt` records the cleanup in the
-protected recovery prefix.
+migration SSH access.
 
-Metadata-only checks on September 7 confirmed that `source.tar` (532,480 bytes),
-`runtime-final.tar` (71,680 bytes), and `cutover-data.tar` (81,920 bytes) still
-exist in the protected recovery prefix. Their contents were not downloaded for
-this check. Cluster workloads, the active schedule, retained PVC, and protected
-GCS recovery objects are outside this source-host cleanup.
+## Migration archive cleanup — 2026-09-07
+
+At the user's request after migration completed, the migration archives and
+verification records under
+`gs://freddie-systems-migration-186933910776/daily-report-2026-09-07/` and the local
+`/home/codex/.local/state/daily-report-migration` directory were deleted. The
+source, runtime and cutover archives, original crontab copy, Git bundles, and
+decommission record are no longer available for recovery. Verification found no
+live, noncurrent or soft-deleted archive objects under that prefix.
+
+The report continues to use its live cluster PVC, Secrets, print records and
+active schedule, with source code in the published repositories. Routine Google
+Drive uploads of `health.db` are part of the active report workflow and were
+outside this migration-archive deletion.
