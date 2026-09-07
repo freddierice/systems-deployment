@@ -9,5 +9,5 @@ apps:
     sourceRevision: "2ad1b5626e42a5f2fa9f356ac9608b2208ea826a"
   trends:
     enabled: true
-    image: registry.digitalocean.com/freddierice-systems/trends@sha256:9a58c69433b52fbd3b36a56a6786588818bfbf303f90bd9f8a9e90bb9a33117e
-    sourceRevision: 0ab11d7f21d90a8f287d553c3628b75cdab7ab8a
+    image: registry.digitalocean.com/freddierice-systems/trends@sha256:2921b5fa49037d118e2557e1992657e4e4b8e454ad3089d94223f1b459adedbe
+    sourceRevision: "e9bd3554aa3217cafadeff227e5779a709963d15"
