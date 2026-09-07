@@ -1,6 +1,6 @@
 # Daily printed report
 
-The report source is `freddierice/time`. The original installation is
+The report source is `freddierice/time`. The original installation was
 `daily@137.184.18.81:/home/daily/time`, scheduled at `30 5 * * *` in
 `America/Chicago`. It syncs Whoop, Withings and Strong, uploads `health.db` to
 Google Drive, renders the planner with Todoist and Google Calendar, and prints
@@ -152,9 +152,10 @@ responses. The printer advertised acceptance of PDF, Letter, color, 600 dpi and
 long-edge duplex.
 
 Only the exact daily report cron line was removed from the source. Its original
-crontab is retained on that host at
-`/home/daily/.local/state/daily-report-cutover-20260907/crontab.before` and as
-`source-cron-before-cutover.txt` in the protected recovery prefix above.
+crontab was backed up at
+`/home/daily/.local/state/daily-report-cutover-20260907/crontab.before` and archived
+as `source-cron-before-cutover.txt` in the protected recovery prefix above. The
+GCS copy remains the recovery copy after source-host cleanup.
 
 A final consistent SQLite snapshot and all four OAuth token files were copied
 to the PVC while the cluster schedule was suspended. All five file hashes
@@ -187,8 +188,35 @@ Do not blindly delete print records or retry an ambiguous submission; inspect
 the printer's job history first to avoid printing the same report twice.
 
 For rollback, suspend the cluster schedule first and wait for any active report
-Job to stop. Preserve the current PVC and refreshed tokens. Reconcile the most
-recent token files, database and print status before restoring the old cron.
-The source host also needs a working printer route; simply restoring its cron
-does not fix its expired Tailscale login. Retained PVCs and block volumes require
-explicit administrator cleanup when recovery is no longer needed.
+Job to stop. Preserve the current PVC and refreshed tokens. Recovery on the
+source host after cleanup requires fresh SSH access and rebuilding the original
+installation from the protected GCS archives. Reconcile the most recent token
+files, database and print status before restoring its runtime configuration or
+cron; an older archive must not replace current rotated tokens or completed
+print records. The source host also needs a working printer route; rebuilding
+its installation does not fix its expired Tailscale login. Retained PVCs and
+block volumes require explicit administrator cleanup when recovery is no longer
+needed.
+
+## Source cleanup — completed 2026-09-07
+
+The original `/home/daily/time` installation and both migration directories,
+`/home/daily/.local/state/time-cluster-migration` and
+`/home/daily/.local/state/daily-report-cutover-20260907`, were removed from
+`ssh-tunnel`. Their absence and the absence of the daily report cron entry were
+verified before closing SSH access.
+
+Exactly one migration key entry was revoked from `/root/.ssh/authorized_keys`,
+preserving the other two entries. A fresh connection using only the migration
+key, with no SSH agent or multiplexed connection, failed with
+`Permission denied (publickey)`. The local private and public key files were
+also deleted. The source host no longer provides an installed fallback or
+migration SSH access; recovery requires the protected GCS archives and fresh
+access as described above. `source-decommission.txt` records the cleanup in the
+protected recovery prefix.
+
+Metadata-only checks on September 7 confirmed that `source.tar` (532,480 bytes),
+`runtime-final.tar` (71,680 bytes), and `cutover-data.tar` (81,920 bytes) still
+exist in the protected recovery prefix. Their contents were not downloaded for
+this check. Cluster workloads, the active schedule, retained PVC, and protected
+GCS recovery objects are outside this source-host cleanup.
