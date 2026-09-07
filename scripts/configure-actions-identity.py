@@ -145,7 +145,10 @@ def resource_plan():
         "assertion.ref == 'refs/heads/main' && "
         "assertion.event_name == 'push' && "
         "assertion.runner_environment == 'github-hosted' && (" + " || ".join(clauses) + ") && "
-        f"(!('job_workflow_ref' in assertion) || assertion.job_workflow_ref == '{DEPLOY_WORKFLOW}')"
+        # Ordinary jobs can identify their own workflow in job_workflow_ref too.
+        # The caller clauses above already pin workflow_ref to each release.yml.
+        "(!('job_workflow_ref' in assertion) || assertion.job_workflow_ref == assertion.workflow_ref || "
+        f"assertion.job_workflow_ref == '{DEPLOY_WORKFLOW}')"
     )
     return {
         "project": PROJECT,

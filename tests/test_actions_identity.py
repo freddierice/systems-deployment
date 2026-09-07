@@ -60,12 +60,16 @@ class TrustTests(unittest.TestCase):
         for app in ("health", "trends"):
             publisher = caller(app)
             self.assertEqual(evaluate(mapping, publisher), f"freddierice/{app}")
+            own_job = publisher | {"job_workflow_ref": publisher["workflow_ref"]}
+            self.assertTrue(evaluate(condition, own_job))
+            self.assertEqual(evaluate(mapping, own_job), f"freddierice/{app}")
             deployment = publisher | {"job_workflow_ref": identity.DEPLOY_WORKFLOW}
             self.assertTrue(evaluate(condition, deployment))
             self.assertEqual(evaluate(mapping, deployment), "deploy")
             for wrong in (identity.DEPLOY_WORKFLOW.replace("deploy.yml", "other.yml"),
                           identity.DEPLOY_WORKFLOW.replace("@refs/heads/main", "@refs/heads/feature"),
-                          identity.DEPLOY_WORKFLOW.replace("freddierice/", "different-owner/"), ""):
+                          identity.DEPLOY_WORKFLOW.replace("freddierice/", "different-owner/"),
+                          caller("trends" if app == "health" else "health")["workflow_ref"], ""):
                 claims = publisher | {"job_workflow_ref": wrong}
                 self.assertFalse(evaluate(condition, claims))
                 self.assertNotEqual(evaluate(mapping, claims), "deploy")
