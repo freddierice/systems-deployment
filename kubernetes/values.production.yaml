@@ -6,6 +6,8 @@ apps:
   health:
     enabled: true
     image: registry.digitalocean.com/freddierice-systems/health@sha256:5c56bdd10237fecd1d388e441404c32d70c387568dde5ebdf4ba288780eaea7a
+    sourceRevision: 8ece89719421f79182c16801720f727c8012ee4b
   trends:
     enabled: true
     image: registry.digitalocean.com/freddierice-systems/trends@sha256:9a58c69433b52fbd3b36a56a6786588818bfbf303f90bd9f8a9e90bb9a33117e
+    sourceRevision: 0ab11d7f21d90a8f287d553c3628b75cdab7ab8a
