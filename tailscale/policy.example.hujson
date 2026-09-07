@@ -1,0 +1,32 @@
+// Merge these entries into the existing tailnet policy; do not replace it.
+// Substitute the existing owner/user group. Only the admin user should be able
+// to mint proxy identities. Do not add tag:systems to Funnel nodeAttrs.
+{
+  "tagOwners": {
+    "tag:systems-operator": ["autogroup:admin"],
+    "tag:systems": ["tag:systems-operator"],
+    "tag:systems-ca-egress": ["tag:systems-operator"]
+  },
+  "grants": [
+    {
+      "src": ["YOUR_TAILSCALE_LOGIN_EMAIL"],
+      "dst": ["tag:systems"],
+      "ip": ["tcp:80", "tcp:443"]
+    },
+    {
+      "src": ["YOUR_TAILSCALE_LOGIN_EMAIL"],
+      "dst": ["tag:systems-operator"],
+      "ip": ["tcp:443"]
+    },
+    {
+      "src": ["tag:systems-ca-egress"],
+      "dst": ["100.103.206.35"],
+      "ip": ["tcp:443"]
+    },
+    {
+      "src": ["100.103.206.35"],
+      "dst": ["tag:systems"],
+      "ip": ["tcp:80"]
+    }
+  ]
+}

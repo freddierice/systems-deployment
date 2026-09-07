@@ -1,0 +1,11 @@
+region      = "nyc1"
+# Replace with the real public egress address of the administrator/runner.
+admin_cidrs = ["203.0.113.10/32"]
+node_count  = 2
+node_size   = "s-2vcpu-4gb"
+
+# Verify these sizes/versions and isolated-worker/NAT availability before applying.
+kubernetes_version_prefix = "1.36."
+postgres_version          = "17"
+postgres_size             = "db-s-1vcpu-2gb"
+nat_size                  = 1

@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: systems-dns
+spec:
+  type: ClusterIP
+  clusterIP: {{ .Values.dns.serviceIP }}
+  selector:
+    app.kubernetes.io/name: systems-dns
+  ports:
+    - {name: dns-udp, port: 53, targetPort: 1053, protocol: UDP}
+    - {name: dns-tcp, port: 53, targetPort: 1053, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: systems-dns
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: systems-dns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: systems-dns
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      dnsPolicy: ClusterFirst
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: coredns
+          image: {{ .Values.dns.image | quote }}
+          args: [-conf, /etc/systems/Corefile]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports:
+            - {name: dns-udp, containerPort: 1053, protocol: UDP}
+            - {name: dns-tcp, containerPort: 1053, protocol: TCP}
+          readinessProbe:
+            httpGet: {path: /ready, port: 8181}
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/systems, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: systems-config}

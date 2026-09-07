@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: systems-gateway
+  annotations:
+    tailscale.com/hostname: {{ .Values.gateway.hostname | quote }}
+    tailscale.com/tags: tag:systems
+    kubernetes.digitalocean.com/firewall-managed: "false"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  allocateLoadBalancerNodePorts: false
+  selector:
+    app.kubernetes.io/name: systems-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: https
+      port: 443
+      targetPort: https
+---
+# Caddy needs outbound tailnet access to the existing private ACME service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ca-tailnet
+  annotations:
+    tailscale.com/tailnet-fqdn: {{ .Values.privateCA.tailnetFQDN | quote }}
+    tailscale.com/tags: tag:systems-ca-egress
+spec:
+  type: ExternalName
+  externalName: placeholder
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP

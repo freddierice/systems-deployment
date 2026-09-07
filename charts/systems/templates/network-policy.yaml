@@ -1,0 +1,58 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailscale-to-gateway
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: systems-gateway}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: tailscale}
+      ports:
+        - {port: 8080, protocol: TCP}
+        - {port: 8443, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-to-dns
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: systems-dns}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: systems-gateway}
+      ports:
+        - {port: 1053, protocol: TCP}
+        - {port: 1053, protocol: UDP}
+{{- range $name, $app := .Values.apps }}
+{{- if $app.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-to-{{ $name }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: {{ $name }}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: systems-gateway}
+      ports:
+        - {port: 8000, protocol: TCP}
+{{- end }}
+{{- end }}

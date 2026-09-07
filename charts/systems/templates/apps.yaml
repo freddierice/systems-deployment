@@ -1,0 +1,125 @@
+{{- range $name, $app := .Values.apps }}
+{{- if $app.enabled }}
+{{- if not $.Values.postgresMigrationVerified }}
+{{- fail "Apps require postgresMigrationVerified=true after code and data migration." }}
+{{- end }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $app.image) }}
+{{- fail "Enabled applications require an immutable image digest." }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  # Each app currently includes background work. Do not duplicate schedulers.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: {{ $name }}
+          image: {{ $app.image | quote }}
+          command: [python, -m, uvicorn]
+          args:
+            - {{ printf "%s.app:app" $name | quote }}
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --proxy-headers
+            - --forwarded-allow-ips
+            - "127.0.0.1,10.72.0.0/16"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - secretRef: {name: {{ $name }}-runtime, optional: true}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ $name }}-database, key: DATABASE_URL}
+            - {name: PGSSLROOTCERT, value: /etc/postgresql/ca.crt}
+            - {name: PGSSLMODE, value: verify-full}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: {{ $app.originVariable }}, value: {{ printf "https://%s" $app.hostname | quote }}}
+            {{- if eq $name "trends" }}
+            - {name: TRENDS_ALLOWED_HOSTS, value: {{ $app.hostname | quote }}}
+            {{- end }}
+          # Local probes avoid redirect-only responses being treated as healthy.
+          # /ready must query PostgreSQL in the future PostgreSQL-capable app.
+          startupProbe:
+            exec:
+              command: [python, /etc/probes/check.py, {{ $app.hostname | quote }}, /ready]
+            failureThreshold: 30
+            periodSeconds: 5
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: [python, /etc/probes/check.py, {{ $app.hostname | quote }}, /ready]
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [python, /etc/probes/check.py, {{ $app.hostname | quote }}, /health]
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml $app.resources | nindent 12 }}
+          volumeMounts:
+            - {name: postgres-ca, mountPath: /etc/postgresql, readOnly: true}
+            - {name: probes, mountPath: /etc/probes, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: postgres-ca
+          configMap: {name: postgres-ca}
+        - name: probes
+          configMap: {name: systems-probes}
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: systems-probes
+data:
+  check.py: |
+    import http.client
+    import sys
+    conn = http.client.HTTPConnection("127.0.0.1", 8000, timeout=3)
+    conn.request("GET", sys.argv[2], headers={"Host": sys.argv[1], "X-Forwarded-Proto": "https"})
+    response = conn.getresponse()
+    sys.exit(0 if response.status == 200 else 1)

@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: systems-config
+data:
+  root_ca.crt: |
+{{ .Files.Get "files/root_ca.crt" | indent 4 }}
+  Caddyfile: |
+    {
+      admin off
+      http_port 8080
+      https_port 8443
+      auto_https disable_redirects
+      servers {
+        protocols h1 h2
+      }
+    }
+
+    :8081 {
+      respond /healthz "ok" 200
+    }
+
+    (private_tls) {
+      tls {
+        issuer acme {
+          dir {{ .Values.privateCA.directory }}
+          test_dir {{ .Values.privateCA.directory }}
+          trusted_roots /etc/systems/root_ca.crt
+          disable_tlsalpn_challenge
+        }
+      }
+    }
+
+    {{- range $name, $app := .Values.apps }}
+    http://{{ $app.hostname }} {
+      @read method GET HEAD
+      redir @read https://{{ $app.hostname }}{uri} 308
+      respond "Use HTTPS before making changes." 403
+    }
+
+    https://{{ $app.hostname }} {
+      import private_tls
+      {{- if $app.enabled }}
+      reverse_proxy {{ $name }}.{{ $.Release.Namespace }}.svc.cluster.local:8000
+      {{- else }}
+      respond "Deployment preparation is in progress." 503
+      {{- end }}
+    }
+    {{- end }}
+  Corefile: |
+    .:1053 {
+      errors
+      health :8080
+      ready :8181
+      # Rewrite answers as well as questions so TLS still uses ca.freddie.xyz.
+      rewrite stop {
+        name exact {{ .Values.privateCA.hostname }} ca-tailnet.{{ .Release.Namespace }}.svc.cluster.local
+        answer auto
+      }
+      forward . /etc/resolv.conf
+      cache 30
+      loop
+      reload
+    }
