@@ -1,6 +1,8 @@
 operatorConfig:
   hostname: systems-operator
-  defaultTags: [tag:systems-operator]
+  # Match the full tag set on the staged OAuth client for operator enrollment.
+  # Its operator tag owns the individual tags used by the two proxy Services.
+  defaultTags: [tag:systems-operator, tag:systems, tag:systems-ca-egress]
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 256Mi}

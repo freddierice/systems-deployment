@@ -35,10 +35,19 @@ a later integration. The initial bootstrap uses the owner-supplied `codex-trends
 service-account credential on the deployment droplet; no Google private key is
 installed in the cluster. See `docs/secrets.md` for its location and scope.
 
-For the operator OAuth client, select Write for **General / Services**,
-**Devices / Core**, and **Keys / Auth Keys**, each restricted to
-`tag:systems-operator`. Define the tags and grants from
-`tailscale/policy.example.hujson` in the existing tailnet policy before installing.
+The staged OAuth client has Write for **General / Services**, **Devices / Core**,
+and **Keys / Auth Keys**, with the tags `tag:systems-operator`, `tag:systems`, and
+`tag:systems-ca-egress`. The operator's `defaultTags` match that full set because
+Tailscale requires either an exact tag match or ownership of every requested tag.
+The app and CA proxies retain their individual tags. Their `tagOwners` entries
+must name `tag:systems-operator`; selecting tags on the OAuth client does not
+establish tag ownership in the tailnet policy. Merge
+`tailscale/policy.example.hujson` into the existing policy before installing.
+
+When rotating the client, retain its tag set or update `operatorConfig.defaultTags`
+to match the new client. A client carrying only `tag:systems-operator` can instead
+use that single tag for operator enrollment, with the same proxy ownership entries.
+See [Tailscale's tag rules](https://tailscale.com/docs/features/tags).
 
 Applications require `postgresMigrationVerified: true` and immutable image digests
 before their Deployments can render. See `docs/migration.md` for the required

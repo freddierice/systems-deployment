@@ -47,10 +47,23 @@ The two configured Secret Manager versions were successfully read and installed
 as `tailscale/operator-oauth`. No Google service-account key is installed in
 Kubernetes. See [secret storage](secrets.md).
 
-Tailscale operator `1.102.3` currently cannot authenticate because the OAuth client
-is not authorized to request `tag:systems-operator`. The tailnet policy and OAuth
-tag assignment must be corrected before the load balancer can receive an address.
-`tailscale/policy.example.hujson` contains the required tag ownership and grants.
+Tailscale operator `1.102.3` and the systems chart are deployed with Helm. The
+operator and both proxy pods are Ready. The staged OAuth client carries all three
+systems tags, so the operator uses that exact set for enrollment. After the owner
+saved the proxy tag ownership entries, authorization succeeded for each proxy's
+individual tag. `tailscale/policy.example.hujson` records the required ownership
+and grants; it must be merged into the existing policy.
+
+| Tailnet endpoint | Address |
+| --- | --- |
+| Application load balancer `systems.impala-hen.ts.net` | `100.91.90.6` |
+| Kubernetes API proxy `systems-operator.impala-hen.ts.net` | `100.82.200.29` |
+
+The API proxy passed a TLS-verified request with existing Kubernetes credentials
+that listed both nodes. A request from the deployment droplet through the
+application load balancer reached Caddy and received the intended HTTPS redirect.
+Caddy reached the private CA's ACME directory through its dedicated DNS resolver
+and Tailscale egress proxy, with TLS hostname and root verification.
 
 The gateway and its two dedicated DNS pods were verified Ready. The chart uses an
 explicit Caddy executable and retains `NET_BIND_SERVICE` in the capability
@@ -61,25 +74,29 @@ binaries. The containers still run as non-root with a read-only root filesystem.
 
 - Terraform configuration, Helm lint, shell/Python syntax, four mocked Terraform
   checks, and seven Python/Helm checks passed.
+- The final live Terraform plan reported no changes.
 - DigitalOcean reports the cluster running with isolated workers and the intended
   API firewall. The database has only the cluster trusted-source rule.
 - Live database grants, private TLS connectivity, and cross-database isolation
   passed.
 - Caddy's local health endpoint returned `ok`; HTTP GET returned a 308 HTTPS
   redirect and HTTP POST returned 403.
-- Tailscale connectivity, private CA access, certificate issuance/renewal, and
-  access through the load balancer remain unverified until its tag authorization
-  is fixed. Helm deployment must complete before calling the platform ready.
+- Tailscale load-balancer routing, the authenticated Kubernetes API proxy, and
+  private CA connectivity passed. Application certificate issuance and renewal
+  remain unverified: the app hostnames still resolve to the live droplet, so
+  HTTP-01 validation does not target this gateway. Follow the README's certificate
+  and DNS cutover procedure during migration; Caddy may retry issuance meanwhile.
 - Both application Deployments remain disabled. No SQLite data has been migrated,
   no application code has been changed, and no application DNS has been switched.
   The live droplet deployment remains the current service.
 
-After correcting the Tailscale authorization:
+For subsequent platform updates:
 
 ```sh
-# Only needed if the OAuth credential itself was replaced in Secret Manager:
+# After replacing the OAuth credential in Secret Manager:
 python3 kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems
 kubectl --context do-nyc1-systems -n tailscale rollout restart deployment/operator
+# Install/upgrade the Kubernetes configuration:
 bash kubernetes/deploy.sh do-nyc1-systems
 ```
 
