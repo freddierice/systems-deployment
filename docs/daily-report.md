@@ -301,3 +301,30 @@ Health currently has no weight or exercise records within the latest 30-day
 window: its newest weight is dated July 20 and selected exercise record July 8.
 The empty report values reflect that Health history; legacy provider data is
 not substituted. Provider freshness is managed in Health.
+
+
+## Database-free report release — 2026-09-08
+
+Time source `ff9416c53129d754394c1a2b2e4a531605523602` removes the SQLite layer,
+health sync/cache, Drive database upload, and unused direct-provider clients.
+Each PDF reads Health measurements and exercise records directly into memory.
+A failed Health request stops generation and printing, including when an older
+PDF exists. Calendar OAuth and durable print records remain on the PVC.
+
+[Release run 34172372696](https://github.com/freddierice/time/actions/runs/34172372696)
+passed all 42 Time tests, image checks, publishing and automatic deployment.
+The schema helper accepted the removal without an operator migration override.
+Systems commit `66d6b0b` records the deployed image:
+
+```text
+registry.digitalocean.com/freddierice-systems/daily-report@sha256:b5723d54de3659b5a74e07bb5298cdeffcff55a47bb7fccdae14b352302a8a2b
+```
+
+A temporary pod using that exact image passed production preflight and generated
+a 10,198-byte, two-page landscape Letter PDF from live Health, Calendar and
+Todoist. Python audit hooks rejected SQLite connections and database-file access
+during generation; none occurred. Calendar and Todoist reported no warnings.
+Health still reported no measurements in the requested 30-day window.
+The production PDF, print markers and legacy database artifacts were unchanged;
+no printing or upload occurred, and the temporary pod was deleted. The CronJob
+remains enabled at `30 5 * * *` in `America/Chicago`.
