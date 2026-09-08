@@ -14,7 +14,7 @@ spec:
             parentRefs:
               - {name: systems, namespace: {{ .Release.Namespace }}, kind: Gateway, sectionName: http}
             serviceType: ClusterIP
-{{- range $name, $app := .Values.apps }}
+{{- range $name, $app := (include "systems.webApps" . | fromYaml) }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

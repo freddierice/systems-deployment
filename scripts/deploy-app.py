@@ -138,6 +138,14 @@ def image_only(previous, candidate, app, old_image, new_image):
     if target is None or target["image"] not in (old_image, new_image):
         raise ReleaseError("The deployed image differs from the recorded production release.")
     target["image"] = new_image
+    web_key = ("apps/v1", "Deployment", "systems", "time")
+    if app == "daily-report" and web_key in expected:
+        web = expected[web_key]["spec"]["template"]["spec"]
+        for kind, name in (("containers", "time"), ("initContainers", "cache-existing")):
+            container = next((item for item in web[kind] if item["name"] == name), None)
+            if container is None or container["image"] not in (old_image, new_image):
+                raise ReleaseError("The viewer image differs from the recorded report release.")
+            container["image"] = new_image
     if expected != after:
         raise ReleaseError("The chart changes more than the selected app image; reconcile platform/configuration changes separately.")
     return before == after
@@ -203,6 +211,7 @@ def report_smoke(manifest):
         "DATA_DIR", "TZ", "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED")]
     container["volumeMounts"] = [{"name": "data", "mountPath": "/data"}, {"name": "tmp", "mountPath": "/tmp"}]
     pod_spec["containers"] = [container]
+    pod_spec.pop("affinity", None)
     pod_spec.pop("initContainers", None)
     pod_spec.pop("ephemeralContainers", None)
     pod_spec["volumes"] = [{"name": "data", "emptyDir": {}}, {"name": "tmp", "emptyDir": {}}]
@@ -393,6 +402,8 @@ def deploy(args):
         try:
             if args.app != "daily-report":
                 smoke(args.app)
+            elif ("apps/v1", "Deployment", "systems", "time") in resources(candidate):
+                smoke("time")
         except ReleaseError:
             if not unchanged:
                 run(*HELM, "rollback", "systems", str(release["version"]), "--wait", "--timeout", "10m", timeout=660)

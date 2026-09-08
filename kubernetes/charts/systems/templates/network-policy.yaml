@@ -50,7 +50,7 @@ metadata:
 spec:
   podSelector:
     matchExpressions:
-      - {key: app.kubernetes.io/name, operator: In, values: [health, trends]}
+      - {key: app.kubernetes.io/name, operator: In, values: [health, trends, time]}
   policyTypes: [Ingress]
   ingress:
     - from:

@@ -17,7 +17,7 @@ spec:
       protocol: HTTP
       allowedRoutes:
         namespaces: {from: Same}
-    {{- range $name, $app := .Values.apps }}
+    {{- range $name, $app := (include "systems.webApps" . | fromYaml) }}
     - name: {{ $name }}-https
       hostname: {{ $app.hostname | quote }}
       port: 443
@@ -29,7 +29,7 @@ spec:
       allowedRoutes:
         namespaces: {from: Same}
     {{- end }}
-{{- range $name, $app := .Values.apps }}
+{{- range $name, $app := (include "systems.webApps" . | fromYaml) }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

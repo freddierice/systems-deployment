@@ -44,6 +44,16 @@ spec:
           labels:
             app.kubernetes.io/name: daily-report
         spec:
+          {{- if $report.web.enabled }}
+          # ReadWriteOnce permits multiple pods on the same node. Keep the
+          # scheduled writer alongside the viewer that holds the volume.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels: {app.kubernetes.io/name: time}
+                  topologyKey: kubernetes.io/hostname
+          {{- end }}
           restartPolicy: Never
           automountServiceAccountToken: false
           serviceAccountName: daily-report

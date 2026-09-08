@@ -143,3 +143,39 @@ class DailyReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TimeViewerTests(unittest.TestCase):
+    report_resources = DailyReportTests.report_resources
+    def test_viewer_shares_report_image_and_only_exposes_readonly_pdf_subdirectory(self):
+        resources = self.report_resources('--set', 'dailyReport.web.enabled=true')
+        deployment = resources['Deployment', 'time']
+        self.assertEqual(deployment['spec']['strategy'], {'type': 'Recreate'})
+        pod = deployment['spec']['template']['spec']
+        self.assertFalse(pod['automountServiceAccountToken'])
+        web = pod['containers'][0]
+        seed = pod['initContainers'][0]
+        self.assertEqual(web['image'], IMAGE)
+        self.assertEqual(seed['image'], IMAGE)
+        self.assertEqual(seed['command'], ['python', '-m', 'report_cache'])
+        self.assertNotIn('envFrom', web)
+        self.assertNotIn('envFrom', seed)
+        self.assertIn({'name': 'data', 'mountPath': '/data/reports', 'subPath': 'reports', 'readOnly': True}, web['volumeMounts'])
+        self.assertTrue(web['securityContext']['readOnlyRootFilesystem'])
+        self.assertFalse(any('secret' in volume for volume in pod['volumes']))
+        cron_pod = resources['CronJob', 'daily-report']['spec']['jobTemplate']['spec']['template']['spec']
+        affinity = cron_pod['affinity']['podAffinity']['requiredDuringSchedulingIgnoredDuringExecution'][0]
+        self.assertEqual(affinity['topologyKey'], 'kubernetes.io/hostname')
+        self.assertEqual(affinity['labelSelector']['matchLabels'], {'app.kubernetes.io/name': 'time'})
+        route = resources['HTTPRoute', 'time']['spec']
+        self.assertEqual(route['hostnames'], ['time.freddie.xyz'])
+        self.assertEqual(route['rules'][0]['backendRefs'], [{'name': 'time', 'port': 8000}])
+        self.assertEqual(resources['Certificate', 'time-tls']['spec']['dnsNames'], ['time.freddie.xyz'])
+        self.assertIn('time.freddie.xyz', resources['ConfigMap', 'systems-dns-config']['data']['Corefile'])
+        self.assertIn('time', resources['NetworkPolicy', 'gateway-to-applications']['spec']['podSelector']['matchExpressions'][0]['values'])
+
+    def test_viewer_disabled_preserves_original_cronjob_scheduling(self):
+        resources = self.report_resources()
+        self.assertNotIn(('Deployment', 'time'), resources)
+        pod = resources['CronJob', 'daily-report']['spec']['jobTemplate']['spec']['template']['spec']
+        self.assertNotIn('affinity', pod)

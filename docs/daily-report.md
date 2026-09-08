@@ -328,3 +328,33 @@ Health still reported no measurements in the requested 30-day window.
 The production PDF, print markers and legacy database artifacts were unchanged;
 no printing or upload occurred, and the temporary pod was deleted. The CronJob
 remains enabled at `30 5 * * *` in `America/Chicago`.
+
+## Time PDF viewer
+
+`https://time.freddie.xyz` uses the same private Tailscale gateway, ACME issuer,
+HTTPS redirect, and port 8000 ClusterIP routing as Health and Trends. Enable it
+with `dailyReport.web.enabled`. It uses the existing `dailyReport.image`; each
+Time release updates the CronJob, viewer, and cache import init container together.
+The release guard permits only these image changes and checks the viewer through
+HTTPS, rolling back on failure.
+
+The generator atomically publishes `/data/reports/YYYY-MM-DD.pdf` and the existing
+`/data/daily.pdf`. The viewer lists, previews, and downloads saved reports; reads
+never fetch providers or print. The init container imports a pre-existing complete
+`daily.pdf` using its modification date in the configured report timezone and
+preserves its timestamp, without replacing an existing dated cache entry.
+
+The existing retained 1Gi `daily-report-data` claim stores the cache. Only the
+`reports` subdirectory is mounted read-only in the web container; Calendar tokens,
+print markers, runtime secrets, and databases are not mounted in that container.
+The writer has required pod affinity to the single viewer to share ReadWriteOnce
+storage on one node. The viewer uses Recreate updates and prefers an active
+writer's node. The isolated release smoke removes this affinity and uses emptyDir.
+A missing day's PDF is shown as unavailable; an older report is labeled by its date.
+Reports are retained until explicitly removed from the volume.
+
+Initial rollout: release the Time image first, then apply this chart with
+`dailyReport.web.enabled=true` using that released digest. Ensure the private
+`time.freddie.xyz` A record points at the same gateway tailnet IP as Health and
+Trends (`python scripts/app-dns.py --ensure-time` provisions it after checking
+those records). Subsequent image releases use the existing automatic GitHub Actions flow.

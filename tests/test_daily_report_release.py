@@ -116,6 +116,19 @@ class DailyReportReleaseTests(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.image_only(self.before, yaml.safe_dump_all(changed), "daily-report", self.old_image, IMAGE)
 
+    def test_viewer_image_guard_rejects_partial_updates_and_configuration_changes(self):
+        for kind, name in (("containers", "time"), ("initContainers", "cache-existing")):
+            changed = list(yaml.safe_load_all(self.after))
+            web = next(r for r in changed if r["kind"] == "Deployment" and r["metadata"]["name"] == "time")
+            container = next(c for c in web["spec"]["template"]["spec"][kind] if c["name"] == name)
+            container["image"] = self.old_image
+            with self.assertRaisesRegex(release.ReleaseError, "more than"):
+                release.image_only(self.before, yaml.safe_dump_all(changed), "daily-report", self.old_image, IMAGE)
+            container["image"] = IMAGE
+            container["command"] = ["python", "main.py", "generate"]
+            with self.assertRaisesRegex(release.ReleaseError, "more than"):
+                release.image_only(self.before, yaml.safe_dump_all(changed), "daily-report", self.old_image, IMAGE)
+
     def test_live_schedule_drift_does_not_get_overwritten(self):
         for suspended in (False, True):
             after = with_suspension(self.after, suspended)
@@ -178,7 +191,10 @@ class DailyReportReleaseTests(unittest.TestCase):
                         release.deploy(args)
                 else:
                     release.deploy(args)
-                web_smoke.assert_not_called()
+                if not (dry_run or failure or stale or advanced_during_smoke):
+                    web_smoke.assert_called_once_with("time")
+                else:
+                    web_smoke.assert_not_called()
                 upgrades = [action for action in actions if "upgrade" in action]
                 self.assertFalse(any("rollback" in action for action in actions))
                 if dry_run or failure or stale or advanced_during_smoke:
@@ -261,6 +277,7 @@ class DailyReportReleaseTests(unittest.TestCase):
         self.assertEqual(pod["spec"]["securityContext"], original["securityContext"])
         self.assertEqual(pod["spec"]["imagePullSecrets"], original["imagePullSecrets"])
         self.assertFalse(pod["spec"]["automountServiceAccountToken"])
+        self.assertNotIn("affinity", pod["spec"])
         self.assertEqual(pod["spec"]["activeDeadlineSeconds"], 180)
         self.assertEqual(pod["spec"]["restartPolicy"], "Never")
         self.assertTrue(all(volume == {"name": volume["name"], "emptyDir": {}} for volume in pod["spec"]["volumes"]))

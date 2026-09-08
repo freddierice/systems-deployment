@@ -12,7 +12,7 @@ data:
         name exact {{ .Values.privateCA.hostname }} ca-tailnet.{{ .Release.Namespace }}.svc.cluster.local
         answer auto
       }
-      {{- range $name, $app := .Values.apps }}
+      {{- range $name, $app := (include "systems.webApps" . | fromYaml) }}
       # cert-manager's HTTP-01 self-check stays within the cluster.
       rewrite stop {
         name exact {{ $app.hostname }} systems-gateway.{{ $.Release.Namespace }}.svc.cluster.local
