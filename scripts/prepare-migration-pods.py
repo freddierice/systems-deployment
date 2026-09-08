@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create temporary app-image pods for verified imports before Helm rollout."""
+"""Create temporary app-image pods for PostgreSQL schema maintenance."""
 import copy
 import json
 from pathlib import Path
@@ -19,14 +19,11 @@ for document in yaml.safe_load_all(rendered):
         name = document['metadata']['name']
         spec = copy.deepcopy(document['spec']['template']['spec'])
         spec['restartPolicy'] = 'Never'
-        spec['securityContext']['fsGroup'] = 1000
-        spec['volumes'].append({'name': 'migration', 'emptyDir': {'medium': 'Memory'}})
         container = spec['containers'][0]
         container['command'] = ['python', '-c', 'import time; time.sleep(7200)']
         container.pop('args', None)
         for field in ('startupProbe', 'readinessProbe', 'livenessProbe', 'ports'):
             container.pop(field, None)
-        container['volumeMounts'].append({'name': 'migration', 'mountPath': '/migration'})
         document = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {'name': name + '-migration', 'namespace': 'systems'}, 'spec': spec}
     else:
         continue

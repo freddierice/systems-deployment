@@ -20,7 +20,10 @@ __pycache__/
 .venv/
 *.local.yaml
 *.pyc
-*.sqlite3*
+*.dump
+backups/
+snapshots/
 *.pem
 *.key
 *.kubeconfig
+*.sqlite*

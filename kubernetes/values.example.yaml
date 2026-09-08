@@ -1,5 +1,5 @@
 # Copy to kubernetes/values.local.yaml. This file is used directly by Helm.
-# Keep apps disabled until the app code and SQLite data are migrated.
+# Keep apps disabled until their PostgreSQL schemas and data are verified.
 postgresMigrationVerified: false
 imagePullSecrets: []
 apps:

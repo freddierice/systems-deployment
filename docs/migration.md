@@ -1,6 +1,6 @@
 # Application migration and rollout
 
-Health and Trends retain SQLite for local development and use PostgreSQL in their production containers. Each has a versioned `001_initial.sql`, explicit `python -m <app>.migrate` command, and `--import-sqlite` option. Startup checks the schema version; it never creates a SQLite fallback in production. Bound parameters, integer flags, ID sequences, revision locking, and Health integration state are covered by application tests.
+Health and Trends use PostgreSQL in development, tests, and production. Each has a versioned `001_initial.sql` and an explicit `python -m <app>.migrate` command. `DATABASE_URL` is required; production also requires verified TLS. Startup checks connectivity and the schema version. Bound parameters, constraints, ID sequences, revision locking, and Health integration state are covered by the PostgreSQL application suites.
 
 ## Images
 
@@ -18,23 +18,27 @@ After both images are pushed, stop the port-forward and delete the temporary nam
 
 The build script generates a one-hour DOCR push credential and removes its temporary file on exit. The Dockerfiles use a pinned Python base and frozen uv lock. Copy the resulting `@sha256:...` references into `kubernetes/values.production.yaml`. DOCR's Basic registry is `freddierice-systems`, region `nyc3`, with DOKS image-pull integration.
 
-## Final transfer
+## PostgreSQL validation and schema changes
 
-1. Pass both apps' SQLite and PostgreSQL suites, and rehearse a consistent snapshot import into disposable PostgreSQL. The importer requires matching table sets/schema version, checks SQLite integrity and foreign keys, refuses populated targets, copies all tables with constraints enabled, checks row counts and SHA-256 hashes, and resets generated sequences. Everything commits atomically. Monetary values stay exact text; Health measurements use double precision to preserve SQLite values.
-2. Run `scripts/publish-database-secrets.py`, then `kubernetes/bootstrap-google-secrets.py --context do-nyc1-systems`. The one-time legacy runtime import is described in [secrets.md](secrets.md). Configure workload federation and apply its public ConfigMap.
-3. Set production image digests and enable the app flags with background jobs disabled. `scripts/prepare-migration-pods.py` creates temporary pods from these exact images without starting app processes. Validate private, TLS-verified database access and Trends secret access from these pods. The destination app databases must be empty.
-4. Stop both old writers: `systemctl --user stop health.service trends.service`. Use `scripts/snapshot-sqlite.py SOURCE DESTINATION` for each final snapshot. Preserve the snapshots, old code revisions and systemd configuration, and upload the snapshots to the private migration backup bucket before import.
-5. Stream each snapshot into its migration pod's memory-backed `/migration` directory, then execute `python -m <app>.migrate --import-sqlite /migration/<app>.sqlite3`. Preserve the count/hash reports with the backups. Do not rerun against populated destinations.
-6. Run `kubernetes/deploy.sh do-nyc1-systems kubernetes/values.production.yaml`. Confirm both `/ready` probes, app routes, data counts, and settings/provider configuration before accepting traffic. Production requires `sslmode=verify-full`, non-root users, read-only container roots, and immutable image references.
-7. Run `scripts/app-dns.py` to confirm the two existing DNS-only A records, then `scripts/app-dns.py --switch-to 100.91.90.6`. cert-manager automatically retries Gateway API HTTP-01 issuance after DNS propagation. Wait for both Certificates to become Ready; use `cmctl renew --context do-nyc1-systems -n systems health-tls trends-tls` to exercise renewal when needed. Verify both certificates with the Freddie root and actual HTTPS requests through Tailscale. Old DNS caches can take several minutes to expire.
-8. Enable `backgroundJobsEnabled` and deploy again. Confirm Health's provider sync and Trends' provider workers. Delete migration pods and the temporary builder/test namespace. Keep the old services stopped to avoid divergent writers.
+The production data transfer is complete. Ordinary releases retain the existing databases. Run each app's tests with `TEST_DATABASE_URL` pointing to a disposable PostgreSQL database; the tests isolate their tables in temporary schemas. Never point tests at production.
 
-The protected backup bucket is `gs://freddie-systems-migration-186933910776`, with uniform bucket-level access and public access prevention. It contains sensitive app data; grant access only to migration administrators. Google encrypts stored objects. Keep the frozen SQLite backup for recovery, and use managed PostgreSQL backups for subsequent changes.
+For fresh provisioning, publish the database secrets, synchronize runtime secrets, and configure workload federation as described in [secrets.md](secrets.md). Initialize each app's database with `python -m <app>.migrate` using its intended image. Confirm `/ready` before enabling traffic and background jobs.
+
+For a release that changes the schema, review the versioned migration and its compatibility with the running image, verify a PostgreSQL backup, and rehearse against a restored disposable database. Execute the migration separately from application startup. The helper `scripts/prepare-migration-pods.py` creates temporary pods from the production values' exact image digests, with database credentials and verified TLS. It does not execute a migration or start background workers. From the administrator's `do-nyc1-systems` context, run the appropriate command only after reviewing the intended image and schema change:
+
+```sh
+kubectl --context do-nyc1-systems -n systems exec health-migration -- python -m health.migrate
+kubectl --context do-nyc1-systems -n systems exec trends-migration -- python -m trends.migrate
+```
+
+Remove the temporary pods after schema verification. Coordinate a maintenance window for schema changes that are incompatible with the running image. Initial schema creation seeds new databases; rerunning the current migration preserves existing rows and identity sequences.
+
+Use managed PostgreSQL backups for recovery and the apps' `scripts/backup.py` commands for custom-format `pg_dump` archives. Verify recovery with `pg_restore` into a disposable database. The protected recovery bucket is `gs://freddie-systems-migration-186933910776`, with uniform bucket-level access and public access prevention. Existing historical snapshots and reports remain preserved there; they contain sensitive app data.
 
 ## Rollback
 
-Before PostgreSQL accepts new writes, stop new apps/background jobs, restore DNS with `scripts/app-dns.py --switch-to 100.66.233.125`, and restart the frozen droplet services. Once PostgreSQL has accepted writes, roll back the application image while retaining PostgreSQL, or first reconcile/export new data. Switching DNS back to stale SQLite after new writes would lose visibility of those changes. Preserve cert-manager's account/TLS Secrets and Tailscale Service identity.
+Roll back to a compatible application image while retaining the current PostgreSQL databases. If a schema change prevents image rollback, follow its reviewed recovery procedure and reconcile writes before restoring an older database backup. Preserve cert-manager's account/TLS Secrets and Tailscale Service identity. Application services belong on the cluster; do not restart the retired droplet deployments.
 
 ## Updating an app
 
-Test, commit, push and build the app, run any new versioned migrations as a separate Job, update its digest, and deploy the production values file. Do not use the initial SQLite import for ordinary deployments. A single replica with `Recreate` prevents duplicate background schedulers. Secret rotations require synchronization and a pod restart for environment-based credentials; Trends' API-key versions are picked up within 60 seconds.
+Test, commit, push and build the app, run any new versioned migrations separately, update its digest, and deploy the production values file. Confirm `/ready`, app routes, and provider configuration through Tailscale. A single replica with `Recreate` prevents duplicate background schedulers. Secret rotations require synchronization and a pod restart for environment-based credentials; Trends' API-key versions are picked up within 60 seconds.

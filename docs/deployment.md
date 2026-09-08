@@ -73,27 +73,41 @@ DOKS initially bundled Gateway API v1.2.1. We used its documented external-insta
 
 ## Application migration — 2026-09-07
 
-Both apps were migrated from the droplet to DOKS on 2026-09-07. Their final imports committed 45 tables and 978 rows: Health 9 tables / 763 rows, Trends 36 tables / 215 rows. Every table's count and canonical row checksum matched its frozen SQLite snapshot. Health measurements, connected provider tokens/ownership, workouts, and all Trends journal/research/history records were retained. Database sequences were reset after preserving existing IDs.
+Both apps were migrated from the droplet to DOKS on 2026-09-07. Their final imports committed 45 tables and 978 rows: Health 9 tables / 763 rows, Trends 36 tables / 215 rows. Every table's count and canonical row checksum matched its frozen source snapshot. Health measurements, connected provider tokens/ownership, workouts, and all Trends journal/research/history records were retained. Database sequences were reset after preserving existing IDs during the one-time transfer.
 
-The owner's existing Health Measurements and integration work was preserved as commit `fdcbb2b` before PostgreSQL changes. Both app migrations are now pushed to `main`, and the original local checkouts are on the same commits. Health's former uncommitted source files were verified against that preserved commit before advancing its checkout; a recovery stash is retained. The deployed images correspond to these exact source commits.
+The owner's existing Health Measurements and integration work was preserved as commit `fdcbb2b` before PostgreSQL changes. Both app migrations were pushed to `main`. Health's former uncommitted source files were verified against that preserved commit before advancing its checkout; a recovery stash is retained. The deployed images correspond to these exact source commits; later local source edits do not change the running cluster images.
 
 | Application | Source commit | DOCR digest |
 | --- | --- |
 | health | `8ece89719421f79182c16801720f727c8012ee4b` | `sha256:5c56bdd10237fecd1d388e441404c32d70c387568dde5ebdf4ba288780eaea7a` |
 | trends | `0ab11d7f21d90a8f287d553c3628b75cdab7ab8a` | `sha256:9a58c69433b52fbd3b36a56a6786588818bfbf303f90bd9f8a9e90bb9a33117e` |
 
-Both application A records now point to `100.91.90.6`, DNS only. cert-manager obtained both certificates from the existing private CA using HTTP-01. TLS-verified readiness checks passed through the Tailscale load balancer. The original droplet services are stopped and disabled; the source, configuration and SQLite files remain for recovery. Frozen snapshots, count/hash reports, unit files and source revisions are retained under `gs://freddie-systems-migration-186933910776/final-2026-09-07/`, with public access prevention and uniform bucket-level access.
+Both application A records now point to `100.91.90.6`, DNS only. cert-manager obtained both certificates from the existing private CA using HTTP-01. TLS-verified readiness checks passed through the Tailscale load balancer. The original droplet application services are stopped and disabled; the source, configuration and historical data files remain for recovery. Frozen snapshots, count/hash reports, unit files and source revisions are retained under `gs://freddie-systems-migration-186933910776/final-2026-09-07/`, with public access prevention and uniform bucket-level access.
 
-All app configuration credentials are in Google Secret Manager; see [secret storage](secrets.md). Trends' workload identity successfully read and added versions to its two API-key secrets, and was denied access to Health's database secret. Both app images connected to the private PostgreSQL endpoint using verified TLS. The migrated containers have no SQLite fallback, no Google administrative key, and no writeable persistent app filesystem. Health OAuth access/refresh state is stored as app data in PostgreSQL.
+All app configuration credentials are in Google Secret Manager; see [secret storage](secrets.md). Trends' workload identity successfully read and added versions to its two API-key secrets, and was denied access to Health's database secret. Both app images connected to the private PostgreSQL endpoint using verified TLS. The production containers require PostgreSQL, carry no Google administrative key, and have no writeable persistent app filesystem. Health OAuth access/refresh state is stored as app data in PostgreSQL.
 
 Background Health sync and Trends provider workers are enabled through `backgroundJobsEnabled: true`. The current production values, including immutable DOCR digests, are committed in `kubernetes/values.production.yaml`. Terraform still manages only DigitalOcean infrastructure; Helm/kubectl manage all Kubernetes configuration.
 
 ## Verification
 
-- Both apps' existing SQLite suites passed; the PostgreSQL runs exercised the same app behavior, excluding legacy SQLite schema/file tests. Health: 41 PostgreSQL tests passed, 1 SQLite-only skipped. Trends: 205 passed and 9 SQLite-only skipped in the full PostgreSQL run; its final signal-refresh ordering failure then passed on both backends. Additional PostgreSQL transaction/constraint tests passed, including the new mandatory-fund constraint. The final SQLite run passed 215 tests with the PostgreSQL-only transaction test skipped.
+- The migration's PostgreSQL runs passed 41 Health tests and 205 Trends tests; a subsequent signal-refresh ordering fix also passed its targeted test. Additional PostgreSQL transaction/constraint tests passed, including the mandatory-fund constraint. These results describe the original migration, before the later PostgreSQL-only source cleanup.
 - Consistent import rehearsals and the final imports verified all 45 tables. The final imports used the exact deployed image digests and managed database credentials.
 - Both apps' liveness/readiness, main pages, Health Measurements/state/provider routes, Trends funds/trades and provider configuration endpoints returned successful responses.
 - The cluster accepted the rendered resources in a server-side dry run. Terraform validation, Helm lint, four mocked Terraform tests and eight Python/Helm tests passed. The final live Terraform plan reported no changes.
 - Both certificates were renewed through cert-manager after the Gateway API cutover. CertificateRequests completed successfully, temporary solver routes were removed, and Traefik served the newly issued certificates without a pod restart. HTTPS readiness, application pages, provider configuration and cross-origin write rejection passed through the unchanged Tailscale address.
 
-For subsequent updates, use the [rollout runbook](migration.md). The deployment script defaults to the committed production values. The chart/example defaults keep apps disabled for fresh provisioning. Do not point traffic back at frozen SQLite after PostgreSQL has accepted writes; roll back the image while retaining PostgreSQL or reconcile the data first.
+For subsequent updates, use the [rollout runbook](migration.md). The deployment script defaults to the committed production values. The chart/example defaults keep apps disabled for fresh provisioning. Roll back the image while retaining PostgreSQL; restoring an older database backup requires reconciling subsequent writes.
+
+## Droplet retirement
+
+The PostgreSQL-only source cleanup retires the application repositories' droplet service/proxy installers. The droplet's `health.service`, `trends.service`, and `trends-ibkr-gateway.service` user units are stopped and persistently masked. Their previous definitions are retained in an owner-only recovery directory under `~/.local/state/retired-health-trends/`. Local foreground launchers remain available for development with an explicitly configured PostgreSQL database.
+
+The legacy `trends-caddy.service` system unit is now stopped and disabled. It served only the retired Health and Trends loopback backends on the droplet's old Tailscale address. The administrator retired it with:
+
+```sh
+sudo systemctl disable --now trends-caddy.service
+systemctl is-active trends-caddy.service
+systemctl is-enabled trends-caddy.service
+```
+
+Verification returned `inactive` and `disabled`, with no running proxy process. The app user units remain inactive and masked, and there are no droplet listeners on ports 80, 443, 8000, or 8002. The temporary local PostgreSQL test server is also stopped. Health and Trends each have one Ready replica in the `systems` namespace of `do-nyc1-systems`; both TLS-verified `/ready` requests returned HTTP 200 from `100.91.90.6`. The CA is a separate service at `100.103.206.35` and remains required. No new cluster images were rolled out as part of the source cleanup.
