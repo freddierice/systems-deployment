@@ -3,8 +3,8 @@ backgroundJobsEnabled: true
 dailyReport:
   enabled: true
   suspend: false
-  image: registry.digitalocean.com/freddierice-systems/daily-report@sha256:58c773a4475d99ce2ad5e1dd97b7ec97ed74ac742e2a16cbc23cdf7aa6ac77c2
-  sourceRevision: "866935bc85a071ee82a0a42d3c0d69231a275c77"
+  image: registry.digitalocean.com/freddierice-systems/daily-report@sha256:57e5e5fd62034658db30a77753fd65d5671d060fb37d549cc0f8671b64c880c8
+  sourceRevision: "b32651ef84391f784900971a10497114fe34e885"
   printer:
     enabled: true
 imagePullSecrets:
