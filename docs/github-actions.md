@@ -113,7 +113,14 @@ Ordinary future pushes need no additional setup.
   files stay outside the Docker build context and deployment Git checkout.
 - Deployment requires the current app `main` SHA and its matching DOCR tag/digest.
   An older commit is skipped. Repeating a deployment is safe.
-- Health/Trends migration runner or SQL changes stop automatic deployment. The
+- Health/Trends changes under `<app>/migrations/` stop automatic deployment,
+  including additions, edits, renames, and removals. Changes to `migrate.py`
+  alone do not: migration runners are invoked separately and never by image
+  rollout or app startup. Keep all schema and data migrations in versioned files
+  under that directory; runner cleanup does not require `--schema-verified`.
+  The comparison uses the last successfully deployed source revision, so a
+  pending versioned migration keeps later releases gated until it is verified
+  and a successful release records the new baseline. The
   database-free daily report reads Health directly and requires no local database
   migration, seed or backup upload. A daily-report candidate without `db.py` may
   deploy automatically, including the revision that removes it. Existing database

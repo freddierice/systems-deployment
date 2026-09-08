@@ -106,6 +106,33 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaises(release.ReleaseError):
                 release.verify_schema("health", None, changed, repo)
 
+    def test_runner_cleanup_allows_repeated_updates_but_sql_changes_still_stop(self):
+        for app in ("health", "trends"):
+            with self.subTest(app=app), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                git(repo, "init", "-b", "main")
+                migrations = repo / app / "migrations"
+                migrations.mkdir(parents=True)
+                schema = migrations / "001.sql"
+                schema.write_text("CREATE TABLE example(id integer);\n")
+                runner = repo / app / "migrate.py"
+                runner.write_text("# Legacy SQLite importer and PostgreSQL runner\n")
+                old = commit(repo, "Initial schema and runner")
+                runner.write_text("# PostgreSQL runner only\n")
+                current = commit(repo, "Retire SQLite importer")
+                release.verify_schema(app, old, current, repo)
+                (repo / "README.md").write_text("Documentation\n")
+                current = commit(repo, "Another update before successful release")
+                release.verify_schema(app, old, current, repo)
+                schema.write_text("CREATE TABLE example(id bigint);\n")
+                changed = commit(repo, "Edit existing migration")
+                with self.assertRaisesRegex(release.ReleaseError, "Migration files changed"):
+                    release.verify_schema(app, old, changed, repo)
+                schema.rename(migrations / "002.sql")
+                renamed = commit(repo, "Rename migration")
+                with self.assertRaisesRegex(release.ReleaseError, "Migration files changed"):
+                    release.verify_schema(app, changed, renamed, repo)
+
     def test_database_free_exception_does_not_allow_removing_app_migrations(self):
         for app in ("health", "trends"):
             with self.subTest(app=app), tempfile.TemporaryDirectory() as temporary:

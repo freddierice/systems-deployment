@@ -98,7 +98,11 @@ def verify_schema(app, old_sha, new_sha, checkout, schema_verified=False):
         raise ReleaseError("Production sourceRevision is missing; establish a verified baseline first.")
     if schema_verified:
         return  # Explicit operator confirmation; automatic workflows never set this.
-    paths = ["db.py"] if app == "daily-report" else [f"{app}/migrate.py", f"{app}/migrations"]
+    # Health/Trends execute migrations separately, never during image rollout or
+    # application startup. Runner maintenance (such as removing the retired
+    # SQLite importer) does not change the database required by the new image.
+    # Schema/data changes must live in versioned migration files to stay gated.
+    paths = ["db.py"] if app == "daily-report" else [f"{app}/migrations"]
     old_tree = output("git", "ls-tree", "-r", old_sha, "--", *paths, cwd=checkout, source_auth=True)
     new_tree = output("git", "ls-tree", "-r", new_sha, "--", *paths, cwd=checkout, source_auth=True)
     if app == "daily-report" and not new_tree:

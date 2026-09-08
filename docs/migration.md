@@ -24,6 +24,8 @@ The production data transfer is complete. Ordinary releases retain the existing 
 
 For fresh provisioning, publish the database secrets, synchronize runtime secrets, and configure workload federation as described in [secrets.md](secrets.md). Initialize each app's database with `python -m <app>.migrate` using its intended image. Confirm `/ready` before enabling traffic and background jobs.
 
+Keep every schema or data migration in a versioned file under `<app>/migrations/`; do not implement new database changes only in `migrate.py`. The release gate compares that directory with the last successfully deployed source revision. Runner-only maintenance, such as retiring the SQLite importer, can deploy without a schema override because neither rollout nor application startup executes the migration runner.
+
 For a release that changes the schema, review the versioned migration and its compatibility with the running image, verify a PostgreSQL backup, and rehearse against a restored disposable database. Execute the migration separately from application startup. The helper `scripts/prepare-migration-pods.py` creates temporary pods from the production values' exact image digests, with database credentials and verified TLS. It does not execute a migration or start background workers. From the administrator's `do-nyc1-systems` context, run the appropriate command only after reviewing the intended image and schema change:
 
 ```sh
