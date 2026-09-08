@@ -12,8 +12,8 @@ imagePullSecrets:
 apps:
   health:
     enabled: true
-    image: registry.digitalocean.com/freddierice-systems/health@sha256:5bdcaddfc17474d47d6bf27d8d96e140bfe4b1d569c152245e51e639eb02b35d
-    sourceRevision: "208e61ef3d1bb6423f34483eec90f7831d6c97a6"
+    image: registry.digitalocean.com/freddierice-systems/health@sha256:d8454ff6abf6d13919c423be2e1e124437e92a691cc1315ccee9484ffef12792
+    sourceRevision: "e375c2d894bec1daf58d5b88c1c05d8c43893043"
   trends:
     enabled: true
     image: registry.digitalocean.com/freddierice-systems/trends@sha256:7fd84a4cd400dd51b7854675914c1603c810b8914cc7bbeefa89faabd95872d8
