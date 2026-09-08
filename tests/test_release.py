@@ -106,6 +106,24 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaises(release.ReleaseError):
                 release.verify_schema("health", None, changed, repo)
 
+    def test_database_free_exception_does_not_allow_removing_app_migrations(self):
+        for app in ("health", "trends"):
+            with self.subTest(app=app), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                git(repo, "init", "-b", "main")
+                migrations = repo / app / "migrations"
+                migrations.mkdir(parents=True)
+                schema = migrations / "001.sql"
+                schema.write_text("CREATE TABLE example(id integer);\n")
+                old = commit(repo, "Initial schema")
+                schema.unlink()
+                (repo / "README.md").write_text("Documentation\n")
+                current = commit(repo, "Remove schema files")
+                with self.assertRaisesRegex(release.ReleaseError, "Migration files changed"):
+                    release.verify_schema(app, old, current, repo)
+                with self.assertRaisesRegex(release.ReleaseError, "Migration files changed"):
+                    release.verify_schema(app, current, current, repo)
+
 
 class DeploymentTests(unittest.TestCase):
     @classmethod
