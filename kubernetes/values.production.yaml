@@ -16,5 +16,5 @@ apps:
     sourceRevision: "2242a382d3fddfe73bce7c7f05d47ce169f2f790"
   trends:
     enabled: true
-    image: registry.digitalocean.com/freddierice-systems/trends@sha256:74ad786439bb7a49bd5efdd54275f25db0fdea616b1bd775383740a7178fb10c
-    sourceRevision: "279c80fb13326b280ef4df4107a85dcf4dec0464"
+    image: registry.digitalocean.com/freddierice-systems/trends@sha256:7fd84a4cd400dd51b7854675914c1603c810b8914cc7bbeefa89faabd95872d8
+    sourceRevision: "7a111e691b7ea86e4a52c258d8fe15ad6bc1e7ca"
