@@ -101,6 +101,10 @@ def verify_schema(app, old_sha, new_sha, checkout, schema_verified=False):
     paths = ["db.py"] if app == "daily-report" else [f"{app}/migrate.py", f"{app}/migrations"]
     old_tree = output("git", "ls-tree", "-r", old_sha, "--", *paths, cwd=checkout, source_auth=True)
     new_tree = output("git", "ls-tree", "-r", new_sha, "--", *paths, cwd=checkout, source_auth=True)
+    if app == "daily-report" and not new_tree:
+        # Database-free report revisions neither read nor migrate the retained
+        # legacy database. Removing db.py is safe; restoring it stays gated.
+        return
     if not old_tree or old_tree != new_tree:
         raise ReleaseError("Migration files changed: follow the database migration runbook, then manually rerun with --schema-verified.")
 

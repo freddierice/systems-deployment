@@ -2,9 +2,11 @@
 
 The report source is `freddierice/time`. The original installation was
 `daily@137.184.18.81:/home/daily/time`, scheduled at `30 5 * * *` in
-`America/Chicago`. It reads measurements and exercise records from Health,
-uploads `health.db` to Google Drive, renders the planner with Todoist and Google
-Calendar, and prints Letter paper with `sides=two-sided-long-edge`.
+`America/Chicago`. The database-free report reads measurements and exercise
+records directly from Health each time it generates a report, renders the
+planner with Todoist and Google Calendar, and prints Letter paper with
+`sides=two-sided-long-edge`. It does not create, seed, migrate, or upload a local
+health database. The dated sections below retain the earlier deployment history.
 
 ## Cluster configuration
 
@@ -16,19 +18,24 @@ application's persistent print records protect against duplicate submissions.
 The runner checks the printer's terminal job state; local queue acceptance alone
 is not reported as a successful print.
 
-`daily-report-data` is a retained block-storage PVC mounted at `/data`. It holds
-the SQLite database, refreshed OAuth token files, generated PDF and print records.
+`daily-report-data` is a retained block-storage PVC mounted at `/data`. The
+database-free report uses it for the generated PDF, execution lock and print
+records, plus writable Calendar OAuth tokens (`gcal_tokens_*.json`). Existing
+SQLite databases, migration backups and old health-provider OAuth token files
+remain stored there as legacy artifacts; the report does not read or update them.
 The pod runs as UID/GID 1000 with a read-only root filesystem, a writable `/tmp`,
 and no Kubernetes API token. It does not pull Git or install packages at runtime.
 
 The `daily-report-runtime` Secret holds the Todoist token and legacy provider
 settings. Time no longer uses its Whoop or Withings credentials; Health owns
-provider synchronization. `daily-report-google` supplies `google.json` at
-`/etc/daily-report/google.json` for the existing Google Drive integration.
+provider synchronization. The chart retains `daily-report-google`, which supplies
+the legacy `google.json` at `/etc/daily-report/google.json`; the database-free
+report does not use it or upload backups to Google Drive.
 The corresponding Google Secret Manager names are
 `systems-daily-report-runtime` and `systems-daily-report-google`; both are included
-in `kubernetes/google-secrets.yaml`. Mutable provider OAuth tokens belong on the
-PVC, so replacing a Secret cannot revert a rotated refresh token.
+in `kubernetes/google-secrets.yaml`. Removing the database from the application
+does not delete the retained Secrets or stored OAuth tokens. Calendar tokens
+continue to refresh on the PVC; replacing a Secret cannot revert those refreshes.
 
 ## Health data source
 
@@ -52,17 +59,22 @@ Fitbit, manually recorded activity, or locally completed workouts. Time uses the
 selected source without mixing activity from the others. Health has no HRV,
 resting heart rate or sleep measurements to export, so the report omits those fields. Time no longer syncs Strong directly.
 Provider reauthorization, freshness and source corrections are managed in Health.
-Legacy provider rows remain archived in the local database, but reports only
-read the Health cache and never fall back to direct-provider history.
+Legacy provider rows remain archived in the retained database. New reports read
+Health directly, keep the response in memory, and never fall back to that database
+or a local Health cache.
 
-Apply this chart's environment and NetworkPolicy update before releasing the
-Time image: the reusable app deployer permits image changes only. The first
-Health-backed Time release changes `db.py`, so automatic deployment must stop at
-the schema gate. Back up the report database, apply and verify its migration
-without printing, then use `scripts/deploy-app.py --app daily-report` with the
-exact published source/image/run identifiers and `--schema-verified`. Preserve
-the schedule, PVC and print records. Verify a read from Health and report
-generation without submitting a new print job before the next scheduled run.
+The chart's Health environment and NetworkPolicy must already be applied before
+releasing the Time image: the reusable app deployer permits image changes only.
+Publish the deployment helper's database-free release support before pushing the
+Time revision that removes `db.py`. A candidate daily-report revision without
+`db.py` needs no database migration, seed, backup upload or `--schema-verified`,
+including the transition from the previous database-backed image. The source,
+digest, chart, scheduling and isolated-image checks still apply. A revision that
+restores `db.py`, or changes it while retaining the database, still requires
+operator schema verification. Health and Trends retain their migration guards.
+Preserve the schedule, PVC, legacy artifacts and print records. Verify a live
+Health read and report generation without submitting a new print job before the
+next scheduled run.
 
 When GitHub Actions cannot be read through an authenticated GitHub API, the
 published DOCR image's provenance contains its exact Actions run URL. The local
@@ -213,9 +225,10 @@ Do not blindly delete print records or retry an ambiguous submission; inspect
 the printer's job history first to avoid printing the same report twice.
 
 For an image rollback, suspend the cluster schedule first and wait for any
-active report Job to stop. Preserve the live PVC, refreshed tokens and completed
-print records. Select a previous image compatible with the current database,
-and reconcile print status before any manual run. The source host no longer has
+active report Job to stop. Preserve the live PVC, legacy artifacts and completed
+print records, and reconcile print status before any manual run. Rolling back to
+an image that uses SQLite requires verifying its compatibility with the retained
+database; restoring `db.py` is subject to the schema gate. The source host no longer has
 an installed fallback or migration SSH access. Rebuilding there would require
 fresh access, the published Time repository, current runtime state and a working
 printer route.
@@ -245,10 +258,10 @@ source, runtime and cutover archives, original crontab copy, Git bundles, and
 decommission record are no longer available for recovery. Verification found no
 live, noncurrent or soft-deleted archive objects under that prefix.
 
-The report continues to use its live cluster PVC, Secrets, print records and
-active schedule, with source code in the published repositories. Routine Google
-Drive uploads of `health.db` are part of the active report workflow and were
-outside this migration-archive deletion.
+The report continued to use its live cluster PVC, Secrets, print records and
+active schedule, with source code in the published repositories. Google Drive
+backups of `health.db` were outside this migration-archive deletion. The later
+database-free report no longer uploads them; existing backups remain retained.
 
 
 ## Health-only report release — 2026-09-07

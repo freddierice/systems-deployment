@@ -113,10 +113,15 @@ Ordinary future pushes need no additional setup.
   files stay outside the Docker build context and deployment Git checkout.
 - Deployment requires the current app `main` SHA and its matching DOCR tag/digest.
   An older commit is skipped. Repeating a deployment is safe.
-- Migration runner/SQL changes stop automatic deployment. The daily report's
-  SQLite schema lives in `db.py`; changes to that file also stop automatic
-  deployment. Run and verify the
-  migration separately using the [migration runbook](migration.md), then invoke
+- Health/Trends migration runner or SQL changes stop automatic deployment. The
+  database-free daily report reads Health directly and requires no local database
+  migration, seed or backup upload. A daily-report candidate without `db.py` may
+  deploy automatically, including the revision that removes it. Existing database
+  files and backups on the report PVC are retained, without being read or updated
+  by the new image. Publish this deployment helper update before the Time source
+  change. A daily-report revision that adds or changes `db.py` still stops at the
+  schema gate. For gated changes, run and verify the migration separately using
+  the [migration runbook](migration.md), then invoke
   `scripts/deploy-app.py` manually with the release arguments and
   `--schema-verified`. That operator-only flag bypasses the migration-file gate;
   source, image, and chart checks still apply. The GitHub workflow never accepts

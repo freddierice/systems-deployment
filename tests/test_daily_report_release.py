@@ -76,6 +76,28 @@ class DailyReportReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "baseline"):
                 release.verify_schema("daily-report", None, changed, repo, schema_verified=True)
 
+    def test_database_removal_and_database_free_releases_need_no_migration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            git(repo, "init", "-b", "main")
+            (repo / "db.py").write_text("SCHEMA = 'CREATE TABLE example(id INTEGER)'\n")
+            old = commit(repo, "Initial SQLite schema")
+            (repo / "db.py").unlink()
+            (repo / "report.py").write_text("# Report reads Health directly.\n")
+            removed = commit(repo, "Remove the local database")
+            release.verify_schema("daily-report", old, removed, repo)
+            (repo / "README.md").write_text("Database-free report\n")
+            current = commit(repo, "Documentation update")
+            release.verify_schema("daily-report", removed, current, repo)
+            with self.assertRaisesRegex(release.ReleaseError, "baseline"):
+                release.verify_schema("daily-report", None, current, repo)
+            with self.assertRaises(release.ReleaseError):
+                release.verify_schema("daily-report", removed, "f" * 40, repo)
+            (repo / "db.py").write_text("SCHEMA = 'CREATE TABLE example(id INTEGER)'\n")
+            restored = commit(repo, "Restore the local database")
+            with self.assertRaisesRegex(release.ReleaseError, "Migration files changed"):
+                release.verify_schema("daily-report", current, restored, repo)
+
     def test_image_guard_allows_only_the_cronjob_image(self):
         for suspended in (False, True):
             before = with_suspension(self.before, suspended)
