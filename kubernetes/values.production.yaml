@@ -5,8 +5,8 @@ dailyReport:
   suspend: false
   web:
     enabled: true
-  image: registry.digitalocean.com/freddierice-systems/daily-report@sha256:57e5e5fd62034658db30a77753fd65d5671d060fb37d549cc0f8671b64c880c8
-  sourceRevision: "b32651ef84391f784900971a10497114fe34e885"
+  image: registry.digitalocean.com/freddierice-systems/daily-report@sha256:9bef27d7bf603fd2b770c5a4435c9d2972374a568149ee5dd0eb94d42af2329d
+  sourceRevision: "eba301ed99db796dabdfa1e7f23167ddf1cd0826"
   printer:
     enabled: true
 imagePullSecrets:
